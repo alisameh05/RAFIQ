@@ -12,7 +12,7 @@ docker compose --env-file .env.fixture.example up --build --wait --wait-timeout 
 docker compose --env-file .env.fixture.example ps -a
 ```
 
-The first build restores `web/package-lock.json` with npm, `server/uv.lock` with uv, and `server/renv.lock` with renv. Pin and restore the dependencies used by this slice according to the [TRD baseline](TRD.md#11-runtime-and-dependency-baseline). The Dockerfiles and Compose file pin upstream image index digests. The worker's uv version pins the managed Python download, and its build verifies the renv and jsonlite source archives. The fixture workflow records observed runtime versions, image IDs and lockfile hashes.
+The first build restores `web/package-lock.json` with npm, `server/uv.lock` with uv, and `server/renv.lock` with renv. Pin and restore the dependencies used by this slice according to the [TRD baseline](TRD.md#11-runtime-and-dependency-baseline). The Dockerfiles and Compose file pin upstream image index digests. The API uses a pinned Ubuntu base while Debian's current API base has unresolved high-severity scan findings. The API and worker use uv-managed Python, and the worker build verifies the renv and jsonlite source archives. The fixture workflow records observed runtime versions, image IDs and lockfile hashes.
 
 | Service | Entry point and evidence |
 | --- | --- |
@@ -64,6 +64,7 @@ The [local fixture job in RAFIQ CI](https://github.com/alisameh05/RAFIQ/actions/
 ```powershell
 Push-Location web
 npm ci
+npm run lint
 npm run typecheck
 npm exec playwright install chromium
 npm run test:e2e
@@ -74,7 +75,7 @@ Optionally set `RAFIQ_BROWSER_CHANNEL=chrome` in your shell before the test to u
 
 ```powershell
 docker compose --env-file .env.fixture.example stop worker
-docker compose --env-file .env.fixture.example run --rm --no-deps -e RAFIQ_API_DATABASE_URL=postgresql+psycopg://rafiq_api:local-api-only@db:5432/rafiq worker python -m unittest discover -s tests -v
+docker compose --env-file .env.fixture.example run --build --rm --no-deps worker-test
 ```
 
 The fixture uses no provider credentials. Its public synthetic defaults require the explicit `local-fixture` mode and a disposable database. Real secrets and local logs belong in ignored files. Check with `git check-ignore .env server/.env.local web/debug.log logs/fixture.txt`. The committed `.env.fixture.example` contains public test values.

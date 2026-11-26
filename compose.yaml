@@ -68,6 +68,20 @@ services:
       timeout: 3s
       retries: 15
 
+  worker-test:
+    profiles: [test]
+    build: { context: ./server, target: worker-test }
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [data]
+    environment:
+      RAFIQ_MODE: local-fixture
+      RAFIQ_API_DATABASE_URL: ${RAFIQ_API_DATABASE_URL:?use .env.fixture.example}
+      RAFIQ_WORKER_DATABASE_URL: ${RAFIQ_WORKER_DATABASE_URL:?use .env.fixture.example}
+    command: ["python", "-m", "pytest", "-p", "no:cacheprovider", "tests"]
+
   renderer:
     profiles: [render]
     build: { context: ./server, target: renderer }

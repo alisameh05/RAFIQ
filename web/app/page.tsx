@@ -90,6 +90,7 @@ export default function Home() {
 
   useEffect(() => {
     const stored = sessionStorage.getItem('rafiq-fixture-driver');
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Read the tab's identity after hydration.
     setDriver(stored === 'driver-b' ? stored : 'driver-a');
   }, []);
 

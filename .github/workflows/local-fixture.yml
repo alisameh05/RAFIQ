@@ -22,11 +22,12 @@ jobs:
           node-version: '24.22.3'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Restore browser tooling and typecheck
+      - name: Restore browser tooling, lint and typecheck
         working-directory: web
         run: |
           npm install --global npm@11.19.1
           npm ci
+          npm run lint
           npm run typecheck
           npm exec -- playwright install --with-deps chromium
       - name: Validate configuration and ignored local files
@@ -59,6 +60,9 @@ jobs:
           docker compose exec -T worker Rscript --version
           docker compose exec -T worker Rscript --vanilla -e 'print(packageVersion("renv")); print(packageVersion("jsonlite"))'
           docker compose images
+          api_image=$(docker image inspect --format '{{.Id}}' "$(docker compose images -q api)")
+          worker_image=$(docker image inspect --format '{{.Id}}' "$(docker compose images -q worker)")
+          printf 'API_IMAGE_ID=%s\nWORKER_IMAGE_ID=%s\n' "$api_image" "$worker_image" >> "$GITHUB_ENV"
           sha256sum web/package-lock.json server/uv.lock server/renv.lock
       - name: Verify browser submission, reload and identity denial
         working-directory: web
@@ -66,9 +70,7 @@ jobs:
       - name: Verify R output, runtime grants and lease fencing
         run: |
           docker compose stop worker
-          docker compose run --rm --no-deps \
-            -e RAFIQ_API_DATABASE_URL=postgresql+psycopg://rafiq_api:local-api-only@db:5432/rafiq \
-            worker python -m unittest discover -s tests -v
+          docker compose run --build --rm --no-deps worker-test
       - name: Recreate containers and verify persisted result
         run: |
           docker compose down
@@ -97,6 +99,26 @@ jobs:
           RAFIQ_RECOVERY_DRILL: '1'
           RAFIQ_RECOVERY_IMAGE_PROJECT: ${{ env.COMPOSE_PROJECT_NAME }}
         run: npm run test:e2e -- recovery.spec.ts
+      - name: Scan the built API and worker images
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/trivy_0.70.0_Linux-64bit.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-64bit.tar.gz \
+            --output "$archive"
+          printf '%s  %s\n' 8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9 "$archive" | sha256sum --check
+          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP" trivy
+          trivy="$RUNNER_TEMP/trivy"
+
+          "$trivy" image --download-db-only
+          "$trivy" --version
+          status=0
+          for image in "$API_IMAGE_ID" "$WORKER_IMAGE_ID"; do
+            echo "Scanning $image"
+            "$trivy" image --image-src docker --scanners vuln --skip-db-update \
+              --severity HIGH,CRITICAL --exit-code 1 "$image" || status=1
+          done
+          exit "$status"
       - name: Show fixture logs on failure
         if: failure()
         run: docker compose logs --no-color --tail 100

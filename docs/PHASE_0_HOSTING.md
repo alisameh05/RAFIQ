@@ -14,6 +14,8 @@ Use this setup for scheduled RAFIQ university validation with synthetic data. Pl
 
 ## Set up the reviewed candidate
 
+Use the [candidate handoff](PHASE_0_VALIDATION_CANDIDATE.md) to record approval, operator access, rollback and deployed checks.
+
 1. Record the reviewed revision, passing CI run, API and worker image digests, and rollback reference. Confirm provider quotas, operator access and the approved secret store. Keep provider IDs, connection strings, signing secrets and registry credentials in the private handoff.
 2. From the approved operator host, run the candidate's one-shot Alembic migration with the migration role. Verify PostgreSQL TLS connectivity from the API and worker hosts under their separate runtime roles. If IPv6 direct connectivity is unavailable, test the included Supabase session pooler before choosing any paid network add-on. [Supabase connection modes](https://supabase.com/docs/guides/database/connecting-to-postgres)
 3. Deploy the API with its validation-only runtime configuration. Bind the process to `0.0.0.0` on Render's `PORT` and set the candidate's existing readiness path as the service health check. Expose the minimum readiness response and keep operational details behind the approved access controls. Confirm the API reaches the expected database schema before accepting application traffic. [Render port binding](https://render.com/docs/web-services#port-binding) · [Render health checks](https://render.com/docs/health-checks)

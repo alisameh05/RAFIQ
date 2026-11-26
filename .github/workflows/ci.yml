@@ -51,22 +51,45 @@ jobs:
       contents: read
     uses: ./.github/workflows/local-fixture.yml
 
+  dependency-review:
+    name: RAFIQ dependency review
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
+          comment-summary-in-pr: never
+
   gate:
     name: RAFIQ CI gate
     if: ${{ always() }}
-    needs: [source, fixture]
+    needs: [source, fixture, dependency-review]
     permissions: {}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require successful source and fixture checks
+      - name: Require successful checks for the triggering event
         shell: bash
         env:
           SOURCE_RESULT: ${{ needs.source.result }}
           FIXTURE_RESULT: ${{ needs.fixture.result }}
+          DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
         run: |
-          printf 'Source: %s\nFixture: %s\n' "${SOURCE_RESULT:-missing}" "${FIXTURE_RESULT:-missing}"
+          printf 'Source: %s\nFixture: %s\nDependency review: %s\n' \
+            "${SOURCE_RESULT:-missing}" "${FIXTURE_RESULT:-missing}" "${DEPENDENCY_RESULT:-missing}"
           if [[ "$SOURCE_RESULT" != success || "$FIXTURE_RESULT" != success ]]; then
             echo "::error::Source and fixture checks must both succeed."
             exit 1
           fi
+          case "$GITHUB_EVENT_NAME:$DEPENDENCY_RESULT" in
+            pull_request:success|push:skipped) ;;
+            *)
+              echo "::error::Unexpected dependency review outcome for $GITHUB_EVENT_NAME."
+              exit 1
+              ;;
+          esac
