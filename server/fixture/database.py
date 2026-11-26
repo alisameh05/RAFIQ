@@ -1,15 +1,38 @@
 import os
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
-SCHEMA_REVISION = "0002_fixture_claim_index"
+SCHEMA_REVISION = "0003_validation_callback"
+
+
+def database_role(mode: str | None, role: str) -> str:
+    names = {
+        "local-fixture": {"api": "rafiq_api", "worker": "rafiq_worker", "migrate": "rafiq_migrate"},
+        "hosted-validation": {"api": "rafiq_validation_api", "worker": "rafiq_validation_worker",
+                              "migrate": "rafiq_validation_migration"},
+    }
+    try:
+        return names[mode][role]
+    except KeyError:
+        raise RuntimeError("Invalid fixture mode or database role") from None
+
+
+def database_url(mode: str | None, raw_url: str):
+    if mode not in ("local-fixture", "hosted-validation"):
+        raise RuntimeError("The synthetic fixture requires an explicit fixture mode")
+    url = make_url(raw_url)
+    if mode == "hosted-validation" and (
+        url.drivername != "postgresql+psycopg" or not url.host
+        or url.query.get("sslmode") != "verify-full" or not url.query.get("sslrootcert")
+    ):
+        raise RuntimeError("Hosted fixture database connections require verified PostgreSQL TLS")
+    return url
 
 
 def engine_for(role: str):
-    if os.environ.get("RAFIQ_MODE") != "local-fixture":
-        raise RuntimeError("The synthetic fixture requires RAFIQ_MODE=local-fixture")
     return create_engine(
-        os.environ[f"RAFIQ_{role.upper()}_DATABASE_URL"],
+        database_url(os.environ.get("RAFIQ_MODE"), os.environ[f"RAFIQ_{role.upper()}_DATABASE_URL"]),
         connect_args={
             "connect_timeout": 3,
             "options": "-c statement_timeout=5000",
@@ -30,5 +53,5 @@ def schema_ready(connection, role: str) -> bool:
             SELECT current_user = :role AND version_num = :revision
             FROM rafiq_fixture.alembic_version
         """),
-        {"role": f"rafiq_{role}", "revision": SCHEMA_REVISION},
+        {"role": database_role(os.environ.get("RAFIQ_MODE"), role), "revision": SCHEMA_REVISION},
     ).scalar_one_or_none() is True

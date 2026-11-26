@@ -18,7 +18,7 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 COPY fixture ./fixture
 USER 10001:10001
-CMD ["uvicorn", "fixture.api:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+CMD ["python", "-m", "fixture.serve"]
 
 FROM python:3.14.10-slim-bookworm@sha256:e60ad028afdcdd14772a3d46decf0eaf616720f9102aeb4397a2045ff6718c3d AS renderer
 COPY --from=uv /uv /usr/local/bin/uv

@@ -134,7 +134,7 @@ test('recover the fixture through upgrade, database outage and worker interrupti
         const denial = await request.get(`${api}/api/v1/local-fixtures/${rows[0].id}`, { headers });
         expect(denial.status()).toBe(headers === ownerB ? 404 : 401);
       }
-      console.log('Upgrade: revision 0001 live 200, ready 503, heartbeat 1; revision 0002 ready 200.');
+      console.log('Upgrade: revision 0001 live 200, ready 503, heartbeat 1; current head ready 200.');
       console.log('Fresh and upgraded schema dumps match, including grants and RLS. Both rows survived restart; owner restrictions held.');
       return rows;
     });
