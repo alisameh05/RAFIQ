@@ -19,7 +19,7 @@ services:
 
   migrate:
     build: { context: ./server, target: api }
-    image: rafiq-fixture-api:local
+    image: ${RAFIQ_FIXTURE_API_IMAGE:-rafiq-fixture-api:local}
     command: ["alembic", "upgrade", "head"]
     networks: [data]
     environment:
@@ -29,7 +29,7 @@ services:
       db: { condition: service_healthy }
 
   api:
-    image: rafiq-fixture-api:local
+    image: ${RAFIQ_FIXTURE_API_IMAGE:-rafiq-fixture-api:local}
     pull_policy: never
     environment:
       RAFIQ_MODE: local-fixture

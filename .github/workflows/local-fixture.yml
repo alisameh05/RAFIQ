@@ -48,6 +48,27 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:3000/healthz
           curl --fail --silent --show-error http://127.0.0.1:8000/internal/livez
           curl --fail --silent --show-error http://127.0.0.1:8000/internal/readyz
+      - name: Verify synthetic Storage policy isolation
+        run: |
+          docker compose cp supabase/migrations/20261126232258_validation_private_object.sql db:/tmp/rafiq-validation-policy.sql
+          docker compose cp ops/validation/test-storage-policy.sql db:/tmp/test-storage-policy.sql
+          docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U postgres -d rafiq -f /tmp/test-storage-policy.sql
+      - name: Verify hosted database role bootstrap
+        shell: bash
+        run: |
+          container="${COMPOSE_PROJECT_NAME}-role-test"
+          trap 'docker stop "$container" >/dev/null 2>&1 || true' EXIT
+          docker run --detach --rm --network none --name "$container" \
+            -e POSTGRES_PASSWORD=synthetic-only -e POSTGRES_DB=rafiq \
+            postgres:17.12-bookworm@sha256:1eff563f6c868b9b433566e9f3cf6e5c79fbd3b95bf70ec7277d376cdbfc50d7
+          for attempt in {1..30}; do
+            if docker exec "$container" pg_isready -q -h 127.0.0.1 -U postgres -d rafiq; then break; fi
+            sleep 2
+          done
+          docker exec "$container" pg_isready -q -h 127.0.0.1 -U postgres -d rafiq
+          docker cp ops/validation/bootstrap-hosted-database.sql "$container":/tmp/rafiq-hosted-bootstrap.sql
+          docker cp ops/validation/test-hosted-bootstrap.sql "$container":/tmp/test-hosted-bootstrap.sql
+          docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d rafiq -f /tmp/test-hosted-bootstrap.sql
       - name: Record runtime and build artifacts
         run: |
           docker compose exec -T db postgres --version

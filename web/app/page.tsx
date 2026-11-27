@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { SignInButton, UserButton, useAuth } from '@clerk/nextjs';
+import { useCallback, useEffect, useState } from 'react';
 
 type Driver = 'driver-a' | 'driver-b';
 type Fixture = {
@@ -8,12 +9,12 @@ type Fixture = {
   status: 'queued' | 'running' | 'completed' | 'failed';
   result: { count: number; mean: number; method: string } | null;
 };
-const api = 'http://127.0.0.1:8000/api/v1/local-fixtures';
+const localApi = 'http://127.0.0.1:8000/api/v1/local-fixtures';
 
-async function request(driver: Driver, signal: AbortSignal, submit = false): Promise<Fixture | null> {
+async function request(api: string, authorization: string, signal: AbortSignal, submit = false): Promise<Fixture | null> {
   const response = await fetch(submit ? api : `${api}/current`, {
     method: submit ? 'POST' : 'GET',
-    headers: { Authorization: `Bearer local-${driver}` },
+    headers: { Authorization: authorization },
     signal,
     cache: 'no-store',
   });
@@ -21,7 +22,7 @@ async function request(driver: Driver, signal: AbortSignal, submit = false): Pro
   return response.json();
 }
 
-function DriverFixture({ driver }: { driver: Driver }) {
+function FixturePanel({ api, getAuthorization }: { api: string; getAuthorization: () => Promise<string> }) {
   const [fixture, setFixture] = useState<Fixture | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -34,7 +35,9 @@ function DriverFixture({ driver }: { driver: Driver }) {
 
     async function load(submit = false) {
       try {
-        const next = await request(driver, controller.signal, submit);
+        const authorization = await getAuthorization();
+        if (controller.signal.aborted) return;
+        const next = await request(api, authorization, controller.signal, submit);
         if (controller.signal.aborted) return;
         setFixture(next);
         setLoading(false);
@@ -53,7 +56,7 @@ function DriverFixture({ driver }: { driver: Driver }) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [driver, pendingRequest, requestNumber]);
+  }, [api, getAuthorization, pendingRequest, requestNumber]);
 
   function run(action: 'read' | 'submit') {
     setError(false);
@@ -85,7 +88,7 @@ function DriverFixture({ driver }: { driver: Driver }) {
   );
 }
 
-export default function Home() {
+function LocalFixture() {
   const [driver, setDriver] = useState<Driver | null>(null);
 
   useEffect(() => {
@@ -107,7 +110,48 @@ export default function Home() {
         <option value="driver-a">Driver A</option>
         <option value="driver-b">Driver B</option>
       </select>
-      {driver && <DriverFixture key={driver} driver={driver} />}
+      {driver && <LocalDriverFixture key={driver} driver={driver} />}
     </main>
   );
+}
+
+function LocalDriverFixture({ driver }: { driver: Driver }) {
+  const getAuthorization = useCallback(async () => `Bearer local-${driver}`, [driver]);
+  return <FixturePanel api={localApi} getAuthorization={getAuthorization} />;
+}
+
+function hostedApi(): string | null {
+  try {
+    const origin = process.env.NEXT_PUBLIC_RAFIQ_API_ORIGIN;
+    if (!origin) return null;
+    const url = new URL(origin);
+    if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password) return null;
+    return `${origin}/api/v1/local-fixtures`;
+  } catch {
+    return null;
+  }
+}
+
+function HostedFixture() {
+  const { isLoaded, isSignedIn, userId, getToken } = useAuth();
+  const getAuthorization = useCallback(async () => {
+    const token = await getToken();
+    if (!token) throw new Error('Sign-in required');
+    return `Bearer ${token}`;
+  }, [getToken]);
+  const api = hostedApi();
+  return (
+    <main>
+      <h1>RAFIQ validation fixture</h1>
+      <p>Submit synthetic samples 2, 4 and 6 to the R worker.</p>
+      {!api && <p role="alert">The validation API is not configured.</p>}
+      {!isLoaded && <p role="status">Loading sign-in…</p>}
+      {isLoaded && !isSignedIn && <SignInButton mode="modal"><button>Sign in</button></SignInButton>}
+      {isLoaded && isSignedIn && api && <><UserButton /><FixturePanel key={userId} api={api} getAuthorization={getAuthorization} /></>}
+    </main>
+  );
+}
+
+export default function Home() {
+  return process.env.NEXT_PUBLIC_RAFIQ_HOSTED_VALIDATION === 'true' ? <HostedFixture /> : <LocalFixture />;
 }
