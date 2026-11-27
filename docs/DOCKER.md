@@ -431,7 +431,15 @@ Back up and restore as described in §14. Treat `docker compose down -v` as dest
    ```
 
 3. Confirm `.env` has qualified Docker pins. Check the synthetic role URLs and initial fixture names in the role files. Use `postgresql+psycopg://<role>:<fixture-password>@db:5432/rafiq` as the proposed SQLAlchemy form. Supply the isolated Clerk or explicitly enabled local test fixture configuration and the browser origins from §7. Create `web/public/` with the approved fixture or versioned assets before launching. Follow the scaffold's trusted init and asset preparation scripts. The PostgreSQL bootstrap must finish before the migration service runs.
-4. From the root, validate config without printing resolved secrets, build and start.
+4. On a previously initialized local volume advancing to `0006_private_access`, provision the callback role before starting the migration. The PostgreSQL image runs initialization SQL only for a fresh volume.
+
+   ```powershell
+   docker compose up -d --wait db
+   docker compose cp ops/postgres/002-callback-role.sql db:/tmp/rafiq-callback-role.sql
+   docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U postgres -d rafiq -f /tmp/rafiq-callback-role.sql
+   ```
+
+   From the root, validate config without printing resolved secrets, build and start.
 
    ```powershell
    docker compose config --quiet

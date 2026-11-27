@@ -211,9 +211,9 @@ def test_private_workspace_link_resolves_only_for_its_eligible_owner(accounts, p
             "type": "urn:rafiq:problem:resource_unavailable", "title": "Resource unavailable",
             "status": 404, "code": "resource_unavailable", "requestId": result.headers["x-request-id"],
         }
-    assert client.get(path + str(active), headers=headers_a).json() == {
-        "destination": "dashboard", "accountId": owners[0], "acceptedVersion": "controlled-use-1",
-    }
+    context = client.get(path + str(active), headers=headers_a).json()
+    assert 0 < context.pop("expiresInMs") <= 3_600_000
+    assert context == {"destination": "dashboard", "accountId": owners[0], "acceptedVersion": "controlled-use-1"}
 
     forged = client.put(ACCOUNT + "/controlled-use", headers=headers_b, json={**consent, "accountId": owners[0]})
     assert forged.status_code == 422
@@ -237,6 +237,17 @@ def test_private_workspace_link_resolves_only_for_its_eligible_owner(accounts, p
             connection.execute(text(f"DELETE FROM {LINKS} WHERE id = :active"), {"active": active})
 
 
+def sign_delivery(subject, event_type, revision, *, instance=CLERK_INSTANCE, banned=False):
+    event_id = "msg_" + uuid4().hex
+    when = datetime.now(timezone.utc)
+    body = json.dumps({
+        "object": "event", "instance_id": instance, "type": event_type, "timestamp": revision,
+        "data": {"id": subject, "updated_at": revision, "banned": banned, "locked": False},
+    })
+    signature = Webhook(SIGNING_SECRET).sign(event_id, when, body)
+    return body, {"svix-id": event_id, "svix-timestamp": str(int(when.timestamp())), "svix-signature": signature}
+
+
 def test_clerk_callback_reconciles_durable_lifecycle_without_reopening_stale_authority(accounts, published_conditions):
     client, session, engine = accounts
     subject, old_headers = session()
@@ -247,14 +258,7 @@ def test_clerk_callback_reconciles_durable_lifecycle_without_reopening_stale_aut
     assert client.put(ACCOUNT + "/controlled-use", headers=old_headers, json=consent).status_code == 200
 
     def delivery(event_type="user.updated", *, data_revision=revision, instance=CLERK_INSTANCE):
-        event_id = "msg_" + uuid4().hex
-        when = datetime.now(timezone.utc)
-        body = json.dumps({
-            "object": "event", "instance_id": instance, "type": event_type,
-            "data": {"id": subject, "updated_at": data_revision, "banned": False},
-        })
-        signature = Webhook(SIGNING_SECRET).sign(event_id, when, body)
-        return body, {"svix-id": event_id, "svix-timestamp": str(int(when.timestamp())), "svix-signature": signature}
+        return sign_delivery(subject, event_type, data_revision, instance=instance)
 
     def post(event):
         body, headers = event
@@ -279,6 +283,8 @@ def test_clerk_callback_reconciles_durable_lifecycle_without_reopening_stale_aut
     user.update(banned=False, updated_at=revision + 200)
     assert post(delivery()).status_code == 200
     assert client.get(ACCOUNT, headers=old_headers).json()["code"] == "account_restricted"
+    # An unrelated provider update must not move the known reinstatement cutoff forward.
+    user["updated_at"] = revision + 250
     assert post(delivery(data_revision=revision + 200)).status_code == 200
     assert client.get(ACCOUNT, headers=old_headers).status_code == 401
     _, fresh = session(subject=subject, created_at=revision + 201)
@@ -290,8 +296,9 @@ def test_clerk_callback_reconciles_durable_lifecycle_without_reopening_stale_aut
     user.update(updated_at=revision + 300)
     users[subject] = user
     assert post(transient).status_code == 200
+    deletion = delivery("user.deleted", data_revision=revision + 301)
+    assert post(deletion).status_code == 503
     users.pop(subject)
-    deletion = delivery("user.deleted")
     assert post(deletion).status_code == 200
     assert client.get(ACCOUNT, headers=fresh).status_code == 401
     users[subject] = user
@@ -319,6 +326,27 @@ def test_clerk_callback_reconciles_durable_lifecycle_without_reopening_stale_aut
             connection.execute(text(f"SELECT event_id FROM {receipts}"))
     finally:
         callback.dispose()
+
+
+@pytest.mark.parametrize("restore_first", [True, False])
+def test_delayed_restriction_still_retires_sessions_after_clerk_restores_access(accounts, restore_first):
+    client, session, _ = accounts
+    subject, old_headers = session()
+    user = client.app.state.synthetic_users[subject]
+    revision = user["updated_at"]
+    assert client.get(ACCOUNT, headers=old_headers).status_code == 200
+
+    restriction = sign_delivery(subject, "user.updated", revision + 100, banned=True)
+    restore = sign_delivery(subject, "user.updated", revision + 200)
+    user["updated_at"] = revision + 300
+    profile_change = sign_delivery(subject, "user.updated", revision + 300)
+    deliveries = (restore, profile_change, restriction) if restore_first else (restriction, profile_change, restore)
+    for body, headers in deliveries:
+        assert client.post(CALLBACK, content=body, headers=headers).status_code == 200
+
+    assert client.get(ACCOUNT, headers=old_headers).status_code == 401
+    _, fresh = session(subject=subject, created_at=revision + 201)
+    assert client.get(ACCOUNT, headers=fresh).status_code == 200
 
 
 def test_controlled_use_replay_and_private_access_for_the_current_driver(accounts):

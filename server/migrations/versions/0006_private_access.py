@@ -10,6 +10,7 @@ def upgrade():
             clerk_subject text PRIMARY KEY CHECK (length(clerk_subject) BETWEEN 6 AND 133),
             state text NOT NULL CHECK (state IN ('active', 'restricted', 'deleted')),
             provider_revision bigint NOT NULL CHECK (provider_revision >= 0),
+            restriction_revision bigint NOT NULL DEFAULT 0 CHECK (restriction_revision >= 0),
             fresh_session_after bigint NOT NULL DEFAULT 0 CHECK (fresh_session_after >= 0)
         )
     """)
@@ -31,8 +32,16 @@ def upgrade():
         CREATE TABLE rafiq_fixture.clerk_callback_receipts (
             event_id text PRIMARY KEY CHECK (length(event_id) BETWEEN 1 AND 128),
             body_sha256 text NOT NULL CHECK (length(body_sha256) = 64),
+            clerk_subject text NOT NULL CHECK (length(clerk_subject) BETWEEN 6 AND 133),
+            snapshot_revision bigint CHECK (snapshot_revision > 0),
+            snapshot_restricted boolean,
             received_at timestamptz NOT NULL DEFAULT now()
         )
+    """)
+    op.execute("""
+        CREATE INDEX clerk_callback_active_snapshots
+        ON rafiq_fixture.clerk_callback_receipts (clerk_subject, snapshot_revision)
+        WHERE snapshot_restricted IS FALSE
     """)
     op.execute("ALTER TABLE rafiq_fixture.clerk_callback_receipts ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE rafiq_fixture.clerk_callback_receipts FORCE ROW LEVEL SECURITY")

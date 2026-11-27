@@ -35,13 +35,20 @@ class ClerkCallback:
         if not isinstance(subject, str) or not SUBJECT.fullmatch(subject):
             raise InvalidCallback
         digest = hashlib.sha256(body).hexdigest()
+        snapshot = event["data"]
+        snapshot_revision = snapshot.get("updated_at")
+        if not valid_revision(snapshot_revision):
+            snapshot_revision = None
+        snapshot_restricted = restriction_snapshot(snapshot)
         with self.engine.begin() as connection:
             if schema_revision(connection, "callback") != ACCOUNT_SCHEMA_REVISION:
                 raise LifecycleUnavailable
             inserted = connection.execute(text("""
-                INSERT INTO rafiq_fixture.clerk_callback_receipts (event_id, body_sha256)
-                VALUES (:id, :digest) ON CONFLICT (event_id) DO NOTHING
-            """), {"id": event_id, "digest": digest})
+                INSERT INTO rafiq_fixture.clerk_callback_receipts
+                    (event_id, body_sha256, clerk_subject, snapshot_revision, snapshot_restricted)
+                VALUES (:id, :digest, :subject, :revision, :restricted) ON CONFLICT (event_id) DO NOTHING
+            """), {"id": event_id, "digest": digest, "subject": subject,
+                   "revision": snapshot_revision, "restricted": snapshot_restricted})
             if inserted.rowcount == 0:
                 existing = connection.execute(text("""
                     SELECT body_sha256 FROM rafiq_fixture.clerk_callback_receipts WHERE event_id = :id
@@ -55,42 +62,70 @@ class ClerkCallback:
             if current and current["state"] == "deleted":
                 return
 
-            # Ignore older deliveries. Only a current update can release a known ban.
-            event_revision = event["data"].get("updated_at")
-            if current and event["type"] != "user.deleted" and (
-                not valid_revision(event_revision) or event_revision < current["provider_revision"]
+            cutoff = current["fresh_session_after"] if current else 0
+            last_restriction = current["restriction_revision"] if current else 0
+            deletion = event["type"] == "user.deleted"
+            new_restriction = (
+                not deletion and snapshot_restricted is True
+                and snapshot_revision is not None and snapshot_revision > last_restriction
+            )
+            earlier_restoration = (
+                snapshot_restricted is False and snapshot_revision is not None
+                and last_restriction < snapshot_revision < cutoff
+            )
+            # Older signed snapshots can complete a known restriction timeline.
+            if current and not (deletion or new_restriction or earlier_restoration) and (
+                snapshot_revision is None or snapshot_revision < current["provider_revision"]
             ):
                 return
 
             user = lookup_user(subject)
             if user is None:
-                if event["type"] != "user.deleted":
+                if not deletion:
                     raise LifecycleUnavailable
-                state, revision = "deleted", current["provider_revision"] if current else 0
+                deletion_revision = event.get("timestamp")
+                revision = max(
+                    current["provider_revision"] if current else 0,
+                    deletion_revision if valid_revision(deletion_revision) else 0,
+                )
+                state = "deleted"
             else:
                 if user.get("id") != subject or not valid_revision(user.get("updated_at")):
                     raise LifecycleUnavailable
-                if event["type"] == "user.deleted":
-                    return
+                if deletion:
+                    # The signed event and provider read disagree. Leave this delivery retryable.
+                    raise LifecycleUnavailable
                 revision = user["updated_at"]
-                if valid_revision(event_revision) and revision < event_revision:
+                if snapshot_revision is not None and revision < snapshot_revision:
                     raise LifecycleUnavailable
                 state = "restricted" if user.get("banned") or user.get("locked") else "active"
-            cutoff = current["fresh_session_after"] if current else 0
-            if current:
-                if revision < current["provider_revision"]:
+            if current and revision < current["provider_revision"]:
+                return
+            if new_restriction:
+                last_restriction = snapshot_revision
+            if state == "restricted":
+                last_restriction = max(last_restriction, revision)
+            if state == "active" and last_restriction:
+                restoration = first_active_snapshot(connection, subject, last_restriction, revision)
+                was_restricted = current and current["state"] == "restricted"
+                if was_restricted and not restoration and (
+                    snapshot_revision != revision or revision <= last_restriction
+                ):
                     return
-                if current["state"] == "restricted" and state == "active":
-                    if revision == current["provider_revision"] or event_revision != revision:
-                        return
-                    cutoff = max(cutoff, revision)
+                if restoration is not None:
+                    cutoff = restoration
+                elif new_restriction or was_restricted:
+                    # Hold earlier sessions while waiting for a signed restoring snapshot.
+                    cutoff = revision
             connection.execute(text("""
                 INSERT INTO rafiq_fixture.driver_identity_lifecycle
-                    (clerk_subject, state, provider_revision, fresh_session_after)
-                VALUES (:subject, :state, :revision, :cutoff)
+                    (clerk_subject, state, provider_revision, restriction_revision, fresh_session_after)
+                VALUES (:subject, :state, :revision, :restriction, :cutoff)
                 ON CONFLICT (clerk_subject) DO UPDATE SET state = excluded.state,
-                    provider_revision = excluded.provider_revision, fresh_session_after = excluded.fresh_session_after
-            """), {"subject": subject, "state": state, "revision": revision, "cutoff": cutoff})
+                    provider_revision = excluded.provider_revision, restriction_revision = excluded.restriction_revision,
+                    fresh_session_after = excluded.fresh_session_after
+            """), {"subject": subject, "state": state, "revision": revision,
+                   "restriction": last_restriction, "cutoff": cutoff})
 
 
 class LifecycleUnavailable(RuntimeError):
@@ -99,6 +134,22 @@ class LifecycleUnavailable(RuntimeError):
 
 def valid_revision(value: object) -> bool:
     return type(value) is int and 0 < value <= MAX_REVISION
+
+
+def restriction_snapshot(user: dict) -> bool | None:
+    if user.get("banned") is True or user.get("locked") is True:
+        return True
+    if user.get("banned") is False and user.get("locked") is False:
+        return False
+    return None
+
+
+def first_active_snapshot(connection, subject: str, restriction: int, revision: int) -> int | None:
+    return connection.execute(text("""
+        SELECT min(snapshot_revision) FROM rafiq_fixture.clerk_callback_receipts
+        WHERE clerk_subject = :subject AND snapshot_restricted IS FALSE
+          AND snapshot_revision > :restriction AND snapshot_revision <= :revision
+    """), {"subject": subject, "restriction": restriction, "revision": revision}).scalar_one()
 
 
 def lock_identity(connection, subject: str, *, shared: bool) -> None:
@@ -111,6 +162,6 @@ def lock_identity(connection, subject: str, *, shared: bool) -> None:
 
 def identity_lifecycle(connection, subject: str):
     return connection.execute(text("""
-        SELECT state, provider_revision, fresh_session_after
+        SELECT state, provider_revision, restriction_revision, fresh_session_after
         FROM rafiq_fixture.driver_identity_lifecycle WHERE clerk_subject = :subject
     """), {"subject": subject}).mappings().one_or_none()

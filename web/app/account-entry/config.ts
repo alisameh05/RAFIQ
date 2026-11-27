@@ -11,6 +11,11 @@ export function signupOpen() {
     && process.env.CLERK_SECRET_KEY?.startsWith('sk_test_') === true;
 }
 
+export function publishedSupportContact(): string | undefined {
+  const contact = process.env.RAFIQ_SUPPORT_CONTACT;
+  return contact && /^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{1,189}$/.test(contact) ? contact : undefined;
+}
+
 export function accountApiOrigin(): string | null {
   const origin = process.env.RAFIQ_ACCOUNT_API_ORIGIN;
   if (origin === 'http://127.0.0.1:8000' && process.env.NODE_ENV !== 'production') return origin;

@@ -4,6 +4,7 @@ import { useAuth, useClerk, useUser } from '@clerk/nextjs';
 import Link from 'next/link';
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import { accountPath, privateDestination, privatePath, signInPath, type EntryContext, type PrivateDestination } from '../account-entry/return';
+import { RestrictedAccountMessage } from '../account-entry/restricted-account';
 import { VerifyEmail } from '../account-entry/verify-email';
 import { listenForPrivateAccess, notifyPrivateAccess } from './private-access';
 
@@ -18,6 +19,7 @@ type Conditions = { version: string } & Record<(typeof sections)[number][0], str
 type View = 'checking' | 'onboarding' | 'dashboard' | 'readiness' | 'restricted' | 'verification' | 'signIn' | 'unavailable' | 'unavailableLink';
 type GateProps = { apiOrigin: string | null; entry: EntryContext; destination?: PrivateDestination; linkId?: string };
 const returnKey = 'rafiq-readiness-return-driver';
+const destinationRecheckInterval = 10_000;
 
 const titles: Record<View, string> = {
   checking: 'Checking account status',
@@ -72,6 +74,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   const [message, setMessage] = useState('');
   const [supportContact, setSupportContact] = useState<string | undefined>();
   const panel = useRef<HTMLDivElement>(null);
+  const linkExpiryTimer = useRef<number | undefined>(undefined);
   const heading = useRef<HTMLHeadingElement>(null);
   const submit = useRef<HTMLButtonElement>(null);
   const requestScope = useRef<AbortController>(null);
@@ -84,7 +87,10 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   const suspendedPage = useRef(false);
 
   // Abort before a changed identity or URL can paint its replacement gate.
-  useLayoutEffect(() => () => requestScope.current?.abort(), []);
+  useLayoutEffect(() => () => {
+    requestScope.current?.abort();
+    window.clearTimeout(linkExpiryTimer.current);
+  }, []);
 
   useLayoutEffect(() => {
     if (panel.current && !suspendedPage.current) panel.current.hidden = false;
@@ -172,6 +178,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
 
   function clearPrivateView(next: View, contact?: string) {
     requestScope.current?.abort();
+    window.clearTimeout(linkExpiryTimer.current);
     if (panel.current && view !== next) panel.current.hidden = true;
     currentAccount.current = null;
     inFlight.current = false;
@@ -233,12 +240,25 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   }
 
   async function openDestination(target: PrivateDestination, accountId: string, signal: AbortSignal) {
+    const method = linkId === undefined && target === 'readiness' ? 'POST' : 'GET';
     const path = linkId !== undefined ? '/account/links/' + encodeURIComponent(linkId)
-      : target === 'readiness' ? '/account/readiness' : '/account/workspace';
+      : method === 'POST' ? '/account/readiness' : '/account/workspace';
     try {
-      const context = await request(path, signal, target === 'readiness' ? 'POST' : 'GET');
+      const requestStarted = performance.now();
+      const context = await request(path, signal, method);
       if (context.destination !== target || !accountId || !context.accountId || !context.acceptedVersion) throw new Error();
       if (context.accountId !== accountId) throw new GateProblem('authentication_required');
+      if (linkId !== undefined) {
+        if (!Number.isSafeInteger(context.expiresInMs)) throw new Error();
+        const remaining = context.expiresInMs - (performance.now() - requestStarted);
+        if (remaining <= 0) throw new GateProblem('resource_unavailable');
+        window.clearTimeout(linkExpiryTimer.current);
+        if (remaining <= 2_147_483_647) {
+          linkExpiryTimer.current = window.setTimeout(() => {
+            if (!signal.aborted) clearPrivateView('unavailableLink');
+          }, Math.floor(remaining));
+        }
+      }
       if (destination !== target) {
         window.location.replace(privatePath(target));
         return;
@@ -294,6 +314,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
       suspendedPage.current = true;
       if (panel.current) panel.current.hidden = true;
       requestScope.current?.abort();
+      window.clearTimeout(linkExpiryTimer.current);
     };
     const onVisibility = () => {
       if (document.hidden) conceal();
@@ -328,7 +349,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   useEffect(() => {
     if (view !== 'dashboard' && view !== 'readiness') return;
     // Bound the lifetime of a visible view while Clerk and resource state can change remotely.
-    const timer = window.setInterval(() => void recheckDestination(), 10_000);
+    const timer = window.setInterval(() => void recheckDestination(), destinationRecheckInterval);
     return () => window.clearInterval(timer);
   }, [view]);
 
@@ -411,11 +432,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         <p>Your account and controlled-use acceptance are current. Set up the front-facing camera and make your recording choice while stationary when readiness is available.</p>
         <p><Link href={privatePath('dashboard')} prefetch={false}>Return to Dashboard</Link></p>
       </>}
-      {view === 'restricted' && <>
-        <p>New sessions and hosted synchronization are blocked.</p>
-        {supportContact && <p>Contact <a href={'mailto:' + supportContact}>{supportContact}</a> for RAFIQ support.</p>}
-        <p>Sign in again after your access is restored.</p>
-      </>}
+      {view === 'restricted' && <RestrictedAccountMessage supportContact={supportContact} />}
       {view === 'unavailableLink' && <>
         <p>This item is unavailable.</p>
         <p><Link href={privatePath('dashboard')} prefetch={false}>Return to Dashboard</Link></p>

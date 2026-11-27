@@ -91,6 +91,10 @@ class DriverEntryContext(BaseModel):
     acceptedVersion: str
 
 
+class WorkspaceLinkContext(DriverEntryContext):
+    expiresInMs: int = Field(ge=0)
+
+
 class AccountProblem(Exception):
     def __init__(self, status: int, code: str, title: str, support_contact: str | None = None,
                  *, field_errors: list[dict[str, str]] | None = None):
@@ -335,7 +339,8 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
             return account_response({**row, "accepted_version": conditions.version}, identity.email, conditions.version)
 
     def private_context(request: Request, authorization: str | None,
-                        destination: Literal["dashboard", "readiness"], link_id: str | None = None) -> DriverEntryContext:
+                        destination: Literal["dashboard", "readiness"],
+                        link_id: str | None = None) -> DriverEntryContext | WorkspaceLinkContext:
         identity = verified_identity(authorization, settings, request.app.state.clerk)
         with account_access(engine, identity, settings) as (connection, row, conditions):
             if conditions is None:
@@ -348,13 +353,18 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
                     reference = UUID(link_id)
                 except ValueError:
                     raise problem from None
-                available = connection.execute(text("""
-                    SELECT 1 FROM rafiq_fixture.workspace_links
+                expires_in_ms = connection.execute(text("""
+                    SELECT floor(extract(epoch FROM expires_at - statement_timestamp()) * 1000)::bigint
+                    FROM rafiq_fixture.workspace_links
                     WHERE id = :reference AND driver_id = :owner
                       AND deleted_at IS NULL AND expires_at > statement_timestamp()
                 """), {"reference": reference, "owner": row["id"]}).scalar_one_or_none()
-                if available is None:
+                if not expires_in_ms:
                     raise problem
+                return WorkspaceLinkContext(
+                    destination=destination, accountId=row["id"], acceptedVersion=conditions.version,
+                    expiresInMs=expires_in_ms,
+                )
             return DriverEntryContext(
                 destination=destination, accountId=row["id"], acceptedVersion=conditions.version,
             )
@@ -367,7 +377,7 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     def readiness(request: Request, authorization: Annotated[str | None, Header()] = None):
         return private_context(request, authorization, "readiness")
 
-    @app.get("/api/v1/account/links/{link_id}", operation_id="resolveWorkspaceLink", response_model=DriverEntryContext)
+    @app.get("/api/v1/account/links/{link_id}", operation_id="resolveWorkspaceLink", response_model=WorkspaceLinkContext)
     def workspace_link(link_id: str, request: Request, authorization: Annotated[str | None, Header()] = None):
         return private_context(request, authorization, "dashboard", link_id)
 

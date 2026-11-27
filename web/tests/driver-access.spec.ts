@@ -22,6 +22,9 @@ test.beforeEach(async ({ page }) => {
       status: 'needs_identifier',
       supportedSecondFactors: [{ strategy: 'email_code', safeIdentifier: known }],
       async password({ emailAddress, password }: { emailAddress: string; password: string }) {
+        if (emailAddress === 'restricted@example.net' && password === 'Restricted-Road-42') {
+          return fail('user_banned', 403);
+        }
         if (emailAddress === 'verified@example.net' && password === 'Verified-Road-42') {
           signIn.status = 'complete';
           return ok;
@@ -37,7 +40,11 @@ test.beforeEach(async ({ page }) => {
       },
       mfa: {
         async sendEmailCode() { return ok; },
-        async verifyEmailCode() { signIn.status = 'complete'; return ok; },
+        async verifyEmailCode({ code }: { code: string }) {
+          if (code === '333333') return fail('user_locked', 403);
+          signIn.status = 'complete';
+          return ok;
+        },
       },
       async finalize({ navigate }: { navigate: (state: { session: object; decorateUrl: (path: string) => string }) => void }) {
         navigate({ session: {}, decorateUrl: (path) => path });
@@ -120,6 +127,48 @@ test('a signed-out private entry resumes sign-in and an email challenge can rest
   await page.getByLabel('Verification code').press('Enter');
   await gateRequest;
   await expect(page).toHaveURL(origin + '/sign-in?entry=account');
+});
+
+test('Clerk restriction shows P07 at sign-in and permits a clean retry by keyboard', async ({ page }) => {
+  await page.goto(origin + '/sign-in?entry=account');
+  const email = page.getByLabel('Email address', { exact: true });
+  const password = page.getByLabel('Password', { exact: true });
+  await email.fill('restricted@example.net');
+  await password.fill('wrong-password');
+  await password.press('Enter');
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Check your email and password, then try again.');
+
+  await password.fill('Restricted-Road-42');
+  await password.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Account restricted' })).toBeFocused();
+  await expect(email).toHaveCount(0);
+  await expect(page.getByText('restricted@example.net')).toHaveCount(0);
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('link', { name: 'support@example.net' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Sign in' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(email).toBeFocused();
+  await expect(email).toHaveValue('');
+  await expect(password).toHaveValue('');
+});
+
+test('a restriction during the Clerk code challenge clears the challenge and returns to a clean sign-in', async ({ page }) => {
+  await page.goto(origin + '/sign-in');
+  await page.getByLabel('Email address').fill(known);
+  const password = page.getByLabel('Password', { exact: true });
+  await password.fill('Fixture-Road-42');
+  await password.press('Enter');
+  await page.getByRole('button', { name: 'Send verification code' }).press('Enter');
+  const code = page.getByLabel('Verification code');
+  await code.fill('333333');
+  await code.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Account restricted' })).toBeFocused();
+  await expect(code).toHaveCount(0);
+  await expect(page.getByText(known)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Sign in' }).press('Enter');
+  await expect(page.getByLabel('Email address')).toBeFocused();
+  await expect(page.getByLabel('Email address')).toHaveValue('');
 });
 
 test('recovery uses generic feedback and restores focus after expiry and throttling', async ({ page }) => {

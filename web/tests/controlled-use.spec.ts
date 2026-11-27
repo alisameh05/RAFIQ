@@ -64,6 +64,8 @@ test.beforeEach(() => {
 test('a signed-out readiness link carries a fixed entry, and external or ambiguous returns are dropped', async ({ request }) => {
   const readiness = await request.get(origin + '/account/readiness', { maxRedirects: 0 });
   expect(readiness.headers().location).toBe('/sign-in?entry=readiness');
+  const workspaceLink = await request.get(origin + '/account/links/' + linkId, { maxRedirects: 0 });
+  expect(workspaceLink.headers().location).toBe('/sign-in?entry=account');
   for (const query of ['entry=https://outside.example', 'entry=readiness&entry=dashboard', 'entry=/account/readiness']) {
     const rejected = await request.get(origin + '/account?' + query, { maxRedirects: 0 });
     expect(rejected.headers().location).toBe('/sign-in?entry=account');
@@ -207,6 +209,7 @@ test('P08 hides the workspace on expiry and uses the same neutral return for una
     }
     return route.fulfill({ json: {
       accountId: syntheticAccount, destination: 'dashboard', acceptedVersion: 'controlled-use-1',
+      expiresInMs: 60_000,
     } });
   });
   const documentResponse = await page.goto(origin + linkPath);
@@ -238,6 +241,20 @@ test('P08 hides the workspace on expiry and uses the same neutral return for una
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
 });
 
+test('P08 conceals link actions at the known expiration before the next account check', async ({ page }) => {
+  await signInFixture(page, 'fixtureA');
+  await page.clock.install();
+  await page.route(api + '**', (route) => route.fulfill({ json: route.request().url() === api
+    ? { accountId: syntheticAccount, status: 'active', verified: true }
+    : { accountId: syntheticAccount, destination: 'dashboard', acceptedVersion: 'controlled-use-1', expiresInMs: 2500 },
+  }));
+  await page.goto(origin + linkPath);
+  await expect(page.getByRole('link', { name: 'Start session' })).toBeVisible();
+  await page.clock.runFor(2600);
+  await expect(page.getByRole('heading', { name: 'Unavailable link' })).toBeFocused();
+  await expect(page.getByRole('link', { name: 'Start session' })).toHaveCount(0);
+});
+
 test('P07 clears another tab during a delayed response and offers a fresh sign-in', async ({ page, context }) => {
   const sibling = await context.newPage();
   for (const tab of [page, sibling]) {
@@ -263,6 +280,7 @@ test('P07 clears another tab during a delayed response and offers a fresh sign-i
       }
       await route.fulfill({ json: {
         accountId: syntheticAccount, destination: 'dashboard', acceptedVersion: 'controlled-use-1',
+        expiresInMs: 60_000,
       } }).catch(() => {});
     });
   }
@@ -309,7 +327,7 @@ test('switching drivers invalidates the previous session across tabs without reo
           await delayed;
         }
       }
-      await route.fulfill({ json: { accountId, destination: 'dashboard', acceptedVersion: 'controlled-use-1' } }).catch(() => {});
+      await route.fulfill({ json: { accountId, destination: 'dashboard', acceptedVersion: 'controlled-use-1', expiresInMs: 60_000 } }).catch(() => {});
     });
   }
   await page.goto(origin + linkPath);

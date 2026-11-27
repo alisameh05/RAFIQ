@@ -347,7 +347,7 @@ paths:
             Cache-Control: {"$ref":"#/components/headers/CachePrivate"}
           content:
             "application/json":
-              schema: {"$ref":"#/components/schemas/DriverEntryContext"}
+              schema: {"$ref":"#/components/schemas/WorkspaceLinkContext"}
         "401": {"$ref":"#/components/responses/Http401"}
         "403": {"$ref":"#/components/responses/Http403"}
         "404": {"$ref":"#/components/responses/Http404"}
@@ -428,7 +428,7 @@ paths:
         content:
           "application/json":
             schema: {"$ref":"#/components/schemas/ProviderIdentityEnvelope"}
-            example: {"type":"user.updated","data":{"id":"user_example_y5z8"}}
+            example: {"object":"event","instance_id":"ins_example","type":"user.updated","timestamp":1795800000000,"data":{"id":"user_example_y5z8","updated_at":1795800000000}}
       responses:
         "200":
           description: "Authenticated callback was applied durably, already recorded, or safe to ignore. Empty body."
@@ -4070,10 +4070,24 @@ components:
       additionalProperties: false
       required: ["sequenceId","elapsedMs","state"]
       properties: {"sequenceId":{"type":"string","format":"uuid"},"elapsedMs":{"type":"integer","minimum":0},"state":{"type":"string","enum":["active","canceled","closed"]}}
+    WorkspaceLinkContext:
+      type: "object"
+      additionalProperties: false
+      required: ["destination","accountId","acceptedVersion","expiresInMs"]
+      properties:
+        destination: {"const":"dashboard"}
+        accountId: {"type":"string","format":"uuid"}
+        acceptedVersion: {"type":"string","minLength":1,"maxLength":64}
+        expiresInMs: {"type":"integer","minimum":0,"description":"Remaining link eligibility at the server check. Conceal the active link at this deadline, accounting for request time."}
     ProviderIdentityEnvelope:
       type: "object"
-      required: ["type","data"]
-      properties: {"type":{"type":"string","minLength":1,"maxLength":160},"data":{"type":"object","required":[],"properties":{"id":{"type":"string","minLength":1,"maxLength":160}}}}
+      required: ["object","instance_id","type","data"]
+      properties:
+        object: {"const":"event"}
+        instance_id: {"type":"string","minLength":1}
+        type: {"type":"string","minLength":1,"maxLength":160}
+        timestamp: {"type":"integer","minimum":1}
+        data: {"type":"object","properties":{"id":{"type":"string"},"updated_at":{"type":"integer","minimum":1},"banned":{"type":"boolean"},"locked":{"type":"boolean"}}}
     ResendEnvelope:
       type: "object"
       required: ["type","created_at","data"]

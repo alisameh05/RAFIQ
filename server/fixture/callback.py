@@ -25,7 +25,7 @@ def verify_envelope(body: bytes, headers: dict[str, str], secret: str, instance_
     if (
         not isinstance(event, dict) or event.get("object") != "event"
         or event.get("instance_id") != instance_id or not isinstance(event.get("type"), str)
-        or not isinstance(event.get("data"), dict)
+        or not 1 <= len(event["type"]) <= 160 or not isinstance(event.get("data"), dict)
     ):
         raise InvalidCallback
     return event_id, event
