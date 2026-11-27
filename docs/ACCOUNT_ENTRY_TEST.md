@@ -35,3 +35,33 @@ For the account API, use `RAFIQ_API_SURFACE=accounts` with the existing `RAFIQ_M
 - For the local browser checks, build the web application, set `RAFIQ_LANDING_LOCAL=1` and run `npm run test:e2e -- driver-access.spec.ts` in `web/`. The browser uses the Next.js routes with simulated Clerk responses. The suite checks rejected credentials and retry, a returning email challenge and correction, the signed-out account entry, generic recovery, invalid and expired code feedback, throttled resend, password reset confirmation and keyboard focus at 320 CSS pixels.
 - Run `account-entry.spec.ts` with the isolated browser configuration above. Record the same driver ID before recovery and after fresh sign-in with the new password. With an approved test mailbox, confirm code delivery, expiry, resend and the actual provider throttle. Set `RAFIQ_ACCOUNT_E2E_UNVERIFIED_EMAIL` and `RAFIQ_ACCOUNT_E2E_UNVERIFIED_PASSWORD` for a freshly provisioned unverified synthetic identity to confirm P03 verifies the registered address and **Change email** restarts sign-in without modifying the identity. Revoke or expire the test session and open `/account` again to confirm the resumable P04 entry. The unrelated-inbox rollout evidence has its own qualification.
 - Run keyboard and screen-reader checks at narrow width and 200% zoom. Confirm names and help for the email, password and code fields, announcements for progress, errors and completion, and focus after code send, expiry, retry and reset. Record the evidence fields above with the exact candidate SHA.
+
+## Controlled-use acceptance and private entry
+
+[Issue #27](https://github.com/alisameh05/RAFIQ/issues/27) covers ACC-02, FR-01/AC-01, FR-02/AC-02, the FR-04/AC-04 handoff, NFR-04/NFR-05, and J1 screens P06, D01 and D02. The readiness endpoint provides current verified, eligible context for the MON-01 handoff. Camera access, recording consent and session start belong to MON-01.
+
+Deploy the compatible account build on `0004_driver_accounts`, then migrate the isolated account database to `0005_controlled_use`. An empty publication table holds P06 acceptance and both private destinations closed. `RAFIQ_CONTROLLED_USE_VERSION` remains the account-status fallback before publication. Identity and Product UI review the exact conditions and fixed return allowlist before publication. The allowlist contains Dashboard (`/account/dashboard`) and the stationary readiness handoff (`/account/readiness`). Both resolve against the current driver and carry no resource identifiers. Add future record links only after the owning module supplies an authorization check.
+
+The migration role publishes the four approved strings using this transaction. Use a fresh immutable version for every text change and retain the exact approved version and text in the publication evidence. The API role can read the publication and record the owning driver's acceptance. It has no publication write access.
+
+~~~sql
+BEGIN;
+SELECT pg_advisory_xact_lock(27001);
+INSERT INTO rafiq_fixture.controlled_use_publication (singleton, version, conditions)
+VALUES (true, '<new-approved-version>', '{
+  "stationary": "<approved stationary setup>",
+  "supervised": "<approved supervised-use conditions>",
+  "camera": "<approved initial camera guidance>",
+  "recording": "<approved separate recording choice>"
+}'::jsonb)
+ON CONFLICT (singleton) DO UPDATE
+SET version = excluded.version, conditions = excluded.conditions;
+COMMIT;
+~~~
+
+To hold private access, take the same exclusive lock and delete the publication in that transaction. Preserve driver acceptance records for recovery. Verify a populated `0004` account survives the upgrade. Before rolling back to a build restricted to schema `0004`, hold the publication, retain its exact text and version in evidence, and downgrade to `0004_driver_accounts`. The downgrade removes the publication and acceptance write permission while retaining driver rows and accepted versions.
+
+- Run `server/tests/test_accounts.py` using the disposable PostgreSQL fixture roles and migration connection. Compare the accepted version across concurrent replay, a fresh signed assertion and a publication change. Verify direct protected GET and POST denial for unverified, unaccepted, expired and restricted callers and isolation between two drivers.
+- Run `RAFIQ_LANDING_LOCAL=1 npm run test:e2e -- controlled-use.spec.ts` after building the web app. The browser fixture substitutes the identity and account network responses. It checks validated return paths, session switch, keyboard focus, accessible headings and checkbox, progress, retriable failures, version change and the D02 handoff.
+- In the isolated Open Clerk environment above, publish synthetic conditions and set `RAFIQ_ACCOUNT_E2E_CONTROLLED_USE=1` for `account-entry.spec.ts`. Confirm signup, recovery, current acceptance, readiness, reload and a fresh sign-in using the same account. Record an actual supported Chrome screen-reader run covering the conditions, progress, retry, changed version and sign-out.
+- Record the candidate SHA, timestamp, environment and runtime, Clerk and conditions versions, fixture identity, setup, expected and observed results, and reviewer and disposition. Link sanitized runs in the candidate PR. Keep route enablement pending Identity and Product UI review. [Evidence fields](IMPLEMENTATION_GUIDE.md#5-traceability-and-release-evidence)

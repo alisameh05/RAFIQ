@@ -2,7 +2,7 @@ import { clerkMiddleware } from '@clerk/nextjs/server';
 import { NextResponse, type NextFetchEvent, type NextRequest } from 'next/server';
 import { accountEntryEnabled, signupOpen } from './app/account-entry/config';
 
-const clerk = clerkMiddleware();
+const clerk = clerkMiddleware({ jwtKey: process.env.CLERK_JWT_KEY });
 
 export default function proxy(request: NextRequest, event: NextFetchEvent) {
   const surface = request.nextUrl.pathname.split('/')[1];

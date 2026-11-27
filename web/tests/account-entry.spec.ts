@@ -180,6 +180,26 @@ test('returning driver resets a password and signs into the same account again',
   await page.getByLabel('Password', { exact: true }).press('Enter');
   expect(await freshAccount).toBe(originalId);
   await expect(page.getByRole('heading', { name: 'Controlled-use onboarding' })).toBeVisible();
+
+  if (process.env.RAFIQ_ACCOUNT_E2E_CONTROLLED_USE === '1') {
+    test.setTimeout(150_000);
+    await page.goto(new URL('/account?entry=readiness', base!).href);
+    await page.getByRole('checkbox', { name: 'I accept the current controlled-use conditions.' }).check();
+    await page.getByRole('button', { name: 'Accept and continue' }).press('Enter');
+    const readiness = page.getByRole('heading', { name: 'Stationary readiness' });
+    await expect(readiness).toBeVisible();
+    await page.reload();
+    await expect(readiness).toBeVisible();
+    await page.getByRole('button', { name: 'Sign out' }).press('Enter');
+    await page.goto(new URL('/account/readiness', base!).href);
+    await expect(page).toHaveURL(/\/sign-in\?entry=readiness$/);
+    await address.fill(email);
+    await page.getByLabel('Password', { exact: true }).fill(newPassword);
+    const resumedAccount = account();
+    await page.getByRole('button', { name: 'Sign in', exact: true }).press('Enter');
+    expect(await resumedAccount).toBe(originalId);
+    await expect(readiness).toBeVisible();
+  }
 });
 
 test('an unverified returning identity verifies its registered email before account access', async ({ page }) => {

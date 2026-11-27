@@ -80,6 +80,7 @@ services:
       RAFIQ_MODE: local-fixture
       RAFIQ_API_DATABASE_URL: ${RAFIQ_API_DATABASE_URL:?use .env.fixture.example}
       RAFIQ_WORKER_DATABASE_URL: ${RAFIQ_WORKER_DATABASE_URL:?use .env.fixture.example}
+      RAFIQ_MIGRATE_DATABASE_URL: ${RAFIQ_MIGRATE_DATABASE_URL:?use .env.fixture.example}
     command: ["python", "-m", "pytest", "-p", "no:cacheprovider", "tests"]
 
   renderer:
