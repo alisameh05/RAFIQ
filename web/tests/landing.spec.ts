@@ -42,7 +42,7 @@ test('both join actions navigate to the real signup form', async ({ page }, test
   }
   await page.getByRole('banner').getByRole('link', { name: 'Sign in' }).click();
   await expect(page).toHaveURL(new URL('/sign-in', enabled).href);
-  await expect(page.getByRole('button', { name: /continue/i }).first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
 });
 
 test('sample evidence supports keyboard and pointer review with exact source facts', async ({ page }) => {
