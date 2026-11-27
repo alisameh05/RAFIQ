@@ -1,23 +1,35 @@
-import { SignIn } from '@clerk/nextjs';
 import { auth } from '@clerk/nextjs/server';
-import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { connection } from 'next/server';
 import { accountEntryEnabled, signupOpen } from '../../account-entry/config';
+import { accountPath, entryContext } from '../../account-entry/return';
 import { EntryIdentity, EntryShell } from '../../account-entry/shell';
+import { DriverAccess } from '../driver-access';
 
-export const metadata = { title: 'Sign in | RAFIQ' };
+type Props = {
+  params: Promise<{ step?: string[] }>;
+  searchParams: Promise<{ entry?: string | string[] }>;
+};
 
-export default async function SignInPage() {
+export async function generateMetadata({ params }: Props) {
+  return { title: (await params).step?.[0] === 'recover' ? 'Recover access | RAFIQ' : 'Sign in | RAFIQ' };
+}
+
+export default async function SignInPage({ params, searchParams }: Props) {
   await connection();
   if (!accountEntryEnabled()) notFound();
-  if ((await auth()).userId) redirect('/account');
+
+  const { step } = await params;
+  const recover = step?.length === 1 && step[0] === 'recover';
+  if (step?.length && !recover) notFound();
+  const entry = entryContext((await searchParams).entry);
+  if ((await auth()).userId) redirect(accountPath(entry));
 
   return (
-    <EntryIdentity><EntryShell>
-      <SignIn path="/sign-in" routing="path" forceRedirectUrl="/account" withSignUp={false}
-        appearance={{ elements: { footerAction: { display: 'none' } } }} />
-      {signupOpen() && <p><Link href="/sign-up">Create account</Link></p>}
-    </EntryShell></EntryIdentity>
+    <EntryIdentity>
+      <EntryShell artwork>
+        <DriverAccess key={recover ? 'recover' : 'sign-in'} entry={entry} recover={recover} registrationOpen={signupOpen()} />
+      </EntryShell>
+    </EntryIdentity>
   );
 }

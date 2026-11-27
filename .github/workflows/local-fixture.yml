@@ -30,13 +30,13 @@ jobs:
           npm run lint
           npm run typecheck
           npm exec -- playwright install --with-deps chromium
-      - name: Verify public landing with signup held
+      - name: Verify public landing and driver access with signup held
         working-directory: web
         env:
           RAFIQ_LANDING_LOCAL: '1'
         run: |
           npm run build
-          npm run test:e2e -- landing.spec.ts
+          npm run test:e2e -- landing.spec.ts driver-access.spec.ts
       - name: Validate configuration and ignored local files
         run: |
           docker compose config --quiet
