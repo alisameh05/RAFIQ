@@ -33,6 +33,7 @@ export function DriverProfile({ account, draftValue, changeDraft, requestProfile
   const returningToProfile = useRef(false);
   const dirty = draft !== (account.displayName ?? '');
   const saving = saveState === 'saving';
+  const submittedSave = saveState !== 'idle';
 
   useLayoutEffect(() => {
     if (identity === 'manage') returnFromIdentity.current?.focus();
@@ -80,7 +81,6 @@ export function DriverProfile({ account, draftValue, changeDraft, requestProfile
     setIdentity('checking');
     try {
       await requestProfile();
-      if (!dirty) changeDraft();
       setIdentity('ready');
     } catch {
       setIdentity('failed');
@@ -111,7 +111,8 @@ export function DriverProfile({ account, draftValue, changeDraft, requestProfile
         <input id="display-name" ref={name} value={draft} readOnly={saving} autoComplete="nickname"
           aria-invalid={fieldError || undefined} aria-describedby="display-name-guidance"
           onChange={(event) => {
-            changeDraft(event.target.value);
+            const value = event.target.value;
+            changeDraft(value === (account.displayName ?? '') ? undefined : value);
             setFieldError(false);
             setSaveState('idle');
           }} />
@@ -173,8 +174,12 @@ export function DriverProfile({ account, draftValue, changeDraft, requestProfile
             (event.shiftKey ? last : first)?.focus();
           }
         }}>
-        <h2 id="sign-out-title">Sign out without saving?</h2>
-        <p id="sign-out-description">Any unsaved display name changes will be discarded.</p>
+        <h2 id="sign-out-title">{submittedSave ? 'Sign out?' : 'Sign out without saving?'}</h2>
+        <p id="sign-out-description">
+          {saveState === 'saved' ? 'Your display name was saved.'
+            : submittedSave ? 'Your submitted display name may still be saved if you sign out now.'
+            : 'Any unsaved display name changes will be discarded.'}
+        </p>
         <div className="profile-actions">
           <button className="entry-action" type="button" ref={keepEditing} onClick={() => dialog.current?.close()}>
             Keep editing

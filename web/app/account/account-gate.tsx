@@ -168,7 +168,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         if (account.status === 'active') {
           if (typeof account.accountId !== 'string' || !account.accountId) throw new Error();
           currentAccount.current = account.accountId;
-          if (target === 'profile' && destination === 'profile') setProfile(profileAccount(account));
+          if (target === 'profile' && destination === 'profile') applyProfile(profileAccount(account));
           await openDestination(target, account.accountId, signal);
         } else if (account.status === 'onboardingRequired') {
           await loadConditions(signal);
@@ -340,6 +340,12 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     if (account.status !== 'active' || account.verified !== true) throw new Error();
   }
 
+  function applyProfile(account: ProfileAccount) {
+    setProfile(account);
+    setProfileDraft((current) => current?.accountId === account.accountId && current.value === (account.displayName ?? '')
+      ? null : current);
+  }
+
   async function requestProfile(displayName?: string) {
     const signal = requestScope.current?.signal;
     const owner = currentAccount.current;
@@ -351,7 +357,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         displayName === undefined ? undefined : { displayName });
       checkSettingsAccount(result, owner);
       const refreshed = profileAccount(result);
-      if (version === profileRequestVersion.current) setProfile(refreshed);
+      if (version === profileRequestVersion.current) applyProfile(refreshed);
     } catch (error) {
       if (!signal.aborted && showAccessProblem(error)) signal.throwIfAborted();
       throw error;
@@ -365,7 +371,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     const canRefresh = view === 'profile' && !editingProfile.current;
     const account = await request('/account', signal);
     checkSettingsAccount(account, owner);
-    if (canRefresh && version === profileRequestVersion.current) setProfile(profileAccount(account));
+    if (canRefresh && version === profileRequestVersion.current) applyProfile(profileAccount(account));
   }
 
   function retry() {

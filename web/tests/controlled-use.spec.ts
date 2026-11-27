@@ -496,9 +496,10 @@ test('D19 retains a draft through a service outage and refreshes verified identi
   await page.clock.install();
   let unavailable = false;
   let email = longEmail;
+  let displayName = 'Saved value';
   await page.route(api, (route) => {
     if (unavailable) return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
-    return route.fulfill({ json: profileFixture('Saved value', email) });
+    return route.fulfill({ json: profileFixture(displayName, email) });
   });
   await page.goto(origin + profilePath);
   const name = page.getByLabel('Display name');
@@ -517,6 +518,12 @@ test('D19 retains a draft through a service outage and refreshes verified identi
   await page.clock.runFor(10_100);
   await expect(page.getByText(email, { exact: true })).toBeVisible();
   await expect(name).toHaveValue('Draft through outage');
+
+  await name.fill('Saved value');
+  displayName = 'Changed in another session';
+  await page.clock.runFor(10_100);
+  await expect(name).toHaveValue(displayName);
+  await expect(page.getByRole('button', { name: 'Save changes' })).toBeDisabled();
 });
 
 test('D19 rechecks authorized identity after returning from Clerk and routes a restriction to P07', async ({ page }) => {
@@ -561,6 +568,34 @@ test('D19 rechecks authorized identity after returning from Clerk and routes a r
   await back.click();
   await expect(page.getByRole('heading', { name: 'Verify your email' })).toBeVisible();
   await expect(page.getByLabel('Display name')).toHaveCount(0);
+});
+
+test('D19 distinguishes a submitted save from an unsaved draft during sign-out', async ({ page }) => {
+  await signInFixture(page, 'profileSignOutSave');
+  let begin!: () => void;
+  const saving = new Promise<void>((resolve) => { begin = resolve; });
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(api, async (route) => {
+    if (route.request().method() === 'PATCH') {
+      begin();
+      await delayed;
+      return route.fulfill({ json: profileFixture('Changed name') });
+    }
+    return route.fulfill({ json: profileFixture('Saved value') });
+  });
+
+  await page.goto(origin + profilePath);
+  await page.getByLabel('Display name').fill('Changed name');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await saving;
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  const dialog = page.getByRole('alertdialog', { name: 'Sign out?' });
+  await expect(dialog).toHaveAccessibleDescription('Your submitted display name may still be saved if you sign out now.');
+  release();
+  await expect(dialog).toHaveAccessibleDescription('Your display name was saved.');
+  await dialog.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page).toHaveURL(origin + '/');
 });
 
 test('D19 traps confirmation focus and locks private views through pending, failed and retried sign-out', async ({ page, context }) => {
