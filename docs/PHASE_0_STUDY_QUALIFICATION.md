@@ -55,6 +55,8 @@ Platform and Release reserve a seven-day hosted availability window for NFR-03 w
 
 **Window and candidate Pending.** REL-01 depends on FND-04, FND-05 (isolated HTTPS validation and required CI), ACC-02 (qualified deployed identity), and MON-01 (real camera session and durable summary). Confirm the production-like HTTPS environment and candidate, working availability probe, staffing, consent and slots. Assign an owner and follow-up date to each unresolved prerequisite. The Phase 0 synthetic validation setup can be used for rehearsal. [Phase 0 hosting](PHASE_0_HOSTING.md) · [Day 2 escalations](PHASE_0_DAY_2_ESCALATION.md#3-escalation-checklist)
 
+Use the [deployed email qualification](DEPLOYED_EMAIL_QUALIFICATION.md#disposition) for the ACC-02 identity and public signup status at the Day 6 handoff.
+
 ## Sign-off worksheets
 
 Use these worksheets in the approved study or operations store. Every completed worksheet records the requirement, setup, workload, environment, candidate SHA and applicable image digests, schema and policy versions, dataset or fixture version, date and time, expected and observed result, status (**Passed**, **Failed** or **Pending**), accountable owner, reviewer, and privacy-safe evidence reference. When evidence must be repeated, record what changed and which checks must be rerun.
