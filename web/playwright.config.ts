@@ -27,6 +27,7 @@ export default defineConfig({
         ? createPublicKey(process.env.RAFIQ_LOCAL_CLERK_KEY).export({ type: 'spki', format: 'pem' }).toString()
         : '',
       RAFIQ_ACCOUNT_API_ORIGIN: 'https://accounts.example.test',
+      RAFIQ_SUPPORT_CONTACT: 'support@example.net',
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: 'pk_live_' + Buffer.from('clerk.example.test$').toString('base64'),
     },
   } : undefined,

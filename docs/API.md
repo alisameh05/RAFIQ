@@ -92,6 +92,7 @@ The browser clears decrypted views and active keys across tabs on sign-out, acco
 | M01 | `GET /api/v1/account/controlled-use` | `getControlledUse` |
 | M01 | `PUT /api/v1/account/controlled-use` | `acceptControlledUse` |
 | M01 | `GET /api/v1/account/workspace` | `getDriverWorkspace` |
+| M01 | `GET /api/v1/account/links/{link_id}` | `resolveWorkspaceLink` |
 | M01 | `POST /api/v1/account/readiness` | `prepareReadinessHandoff` |
 | M01 | `PATCH /api/v1/account` | `updateAccount` |
 | M01 | `GET /api/v1/account/preferences` | `getPreferences` |
@@ -327,6 +328,30 @@ paths:
         "401": {"$ref":"#/components/responses/Http401"}
         "403": {"$ref":"#/components/responses/Http403"}
         "503": {"$ref":"#/components/responses/Http503"}
+  "/api/v1/account/links/{link_id}":
+    get:
+      operationId: "resolveWorkspaceLink"
+      tags: ["M01"]
+      description: "Resolve an unexpired, undeleted workspace link owned by the current eligible driver. Return the same unavailable problem for a malformed, unknown, expired, deleted or other-owner link."
+      x-authority: "Verified eligible driver · current controlled-use acceptance · current link owner"
+      parameters:
+        - name: "link_id"
+          in: "path"
+          required: true
+          schema: {"type":"string","format":"uuid"}
+      responses:
+        "200":
+          description: "Authorized Dashboard context."
+          headers:
+            X-Request-Id: {"$ref":"#/components/headers/RequestId"}
+            Cache-Control: {"$ref":"#/components/headers/CachePrivate"}
+          content:
+            "application/json":
+              schema: {"$ref":"#/components/schemas/WorkspaceLinkContext"}
+        "401": {"$ref":"#/components/responses/Http401"}
+        "403": {"$ref":"#/components/responses/Http403"}
+        "404": {"$ref":"#/components/responses/Http404"}
+        "503": {"$ref":"#/components/responses/Http503"}
   "/api/v1/account/readiness":
     post:
       operationId: "prepareReadinessHandoff"
@@ -394,7 +419,7 @@ paths:
     post:
       operationId: "receiveClerkEvent"
       tags: ["M01"]
-      description: "Verify Svix headers against the raw body. Deduplicate and reconcile the authoritative Clerk identity lifecycle and timestamps for verified access and adoption. Reject stale projections and apply current deletion and suspension state. Ignore authenticated unrelated events after validation."
+      description: "Verify Svix headers against the raw body and configured Clerk instance. Deduplicate verified deliveries and reconcile lifecycle against the Clerk Backend API. Preserve deletion and current restriction against stale updates. After a restriction is lifted, require a Clerk session created after reinstatement. Ignore authenticated unrelated events."
       x-authority: "Verified clerk callback"
       security: [{"clerkSignature":[]}]
       parameters: [{"$ref":"#/components/parameters/SvixId"},{"$ref":"#/components/parameters/SvixTimestamp"},{"$ref":"#/components/parameters/SvixSignature"}]
@@ -403,7 +428,7 @@ paths:
         content:
           "application/json":
             schema: {"$ref":"#/components/schemas/ProviderIdentityEnvelope"}
-            example: {"type":"user.updated","data":{"id":"user_example_y5z8"}}
+            example: {"object":"event","instance_id":"ins_example","type":"user.updated","timestamp":1795800000000,"data":{"id":"user_example_y5z8","updated_at":1795800000000}}
       responses:
         "200":
           description: "Authenticated callback was applied durably, already recorded, or safe to ignore. Empty body."
@@ -4045,10 +4070,24 @@ components:
       additionalProperties: false
       required: ["sequenceId","elapsedMs","state"]
       properties: {"sequenceId":{"type":"string","format":"uuid"},"elapsedMs":{"type":"integer","minimum":0},"state":{"type":"string","enum":["active","canceled","closed"]}}
+    WorkspaceLinkContext:
+      type: "object"
+      additionalProperties: false
+      required: ["destination","accountId","acceptedVersion","expiresInMs"]
+      properties:
+        destination: {"const":"dashboard"}
+        accountId: {"type":"string","format":"uuid"}
+        acceptedVersion: {"type":"string","minLength":1,"maxLength":64}
+        expiresInMs: {"type":"integer","minimum":0,"description":"Remaining link eligibility at the server check. Conceal the active link at this deadline, accounting for request time."}
     ProviderIdentityEnvelope:
       type: "object"
-      required: ["type","data"]
-      properties: {"type":{"type":"string","minLength":1,"maxLength":160},"data":{"type":"object","required":[],"properties":{"id":{"type":"string","minLength":1,"maxLength":160}}}}
+      required: ["object","instance_id","type","data"]
+      properties:
+        object: {"const":"event"}
+        instance_id: {"type":"string","minLength":1}
+        type: {"type":"string","minLength":1,"maxLength":160}
+        timestamp: {"type":"integer","minimum":1}
+        data: {"type":"object","properties":{"id":{"type":"string"},"updated_at":{"type":"integer","minimum":1},"banned":{"type":"boolean"},"locked":{"type":"boolean"}}}
     ResendEnvelope:
       type: "object"
       required: ["type","created_at","data"]

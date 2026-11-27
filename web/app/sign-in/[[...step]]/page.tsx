@@ -1,7 +1,7 @@
 import { auth } from '@clerk/nextjs/server';
 import { notFound, redirect } from 'next/navigation';
 import { connection } from 'next/server';
-import { accountEntryEnabled, signupOpen } from '../../account-entry/config';
+import { accountEntryEnabled, publishedSupportContact, signupOpen } from '../../account-entry/config';
 import { accountPath, entryContext } from '../../account-entry/return';
 import { EntryIdentity, EntryShell } from '../../account-entry/shell';
 import { DriverAccess } from '../driver-access';
@@ -28,7 +28,8 @@ export default async function SignInPage({ params, searchParams }: Props) {
   return (
     <EntryIdentity>
       <EntryShell artwork>
-        <DriverAccess key={recover ? 'recover' : 'sign-in'} entry={entry} recover={recover} registrationOpen={signupOpen()} />
+        <DriverAccess key={recover ? 'recover' : 'sign-in'} entry={entry} recover={recover} registrationOpen={signupOpen()}
+          supportContact={publishedSupportContact()} />
       </EntryShell>
     </EntryIdentity>
   );

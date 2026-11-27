@@ -9,7 +9,8 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, Request, Response
+from starlette.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -18,10 +19,13 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from fixture.database import ACCOUNT_SCHEMA_REVISION, ACCOUNT_SCHEMA_REVISIONS, engine_for, schema_ready, schema_revision
+from fixture.account_lifecycle import (
+    SUBJECT, ClerkCallback, LifecycleUnavailable, identity_lifecycle, lock_identity, valid_revision,
+)
+from fixture.callback import InvalidCallback
+from fixture.database import ACCOUNT_SCHEMA_REVISION, engine_for, schema_ready, schema_revision
 from fixture.identity import https_origin, session_claims, verification_key
 
-SUBJECT = re.compile(r"user_[A-Za-z0-9]{1,128}")
 SESSION = re.compile(r"sess_[A-Za-z0-9]{1,128}")
 CLERK_API = "https://api.clerk.com/v1/"
 PUBLICATION_LOCK = 27001
@@ -49,7 +53,7 @@ class AccountSettings:
         if env.get("RAFIQ_MODE") == "local-fixture" and not secret.startswith("sk_test_"):
             raise ValueError("Local account entry requires a Clerk development instance")
         support_contact = env.get("RAFIQ_SUPPORT_CONTACT") or None
-        if support_contact and not re.fullmatch(r"[^\s@]{1,64}@[^\s@]{1,189}", support_contact):
+        if support_contact and not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{1,189}", support_contact):
             raise ValueError("The support contact must be an email address")
         return cls(web_origin, issuer, verification_key(env.get("CLERK_JWT_KEY", "")), secret,
                    required_version, support_contact)
@@ -87,6 +91,10 @@ class DriverEntryContext(BaseModel):
     acceptedVersion: str
 
 
+class WorkspaceLinkContext(DriverEntryContext):
+    expiresInMs: int = Field(ge=0)
+
+
 class AccountProblem(Exception):
     def __init__(self, status: int, code: str, title: str, support_contact: str | None = None,
                  *, field_errors: list[dict[str, str]] | None = None):
@@ -109,10 +117,12 @@ def restricted(settings: AccountSettings) -> AccountProblem:
     return AccountProblem(403, "account_restricted", "Account access restricted", settings.support_contact)
 
 
-def clerk_record(provider: httpx.Client, settings: AccountSettings, path: str) -> dict:
+def clerk_record(provider: httpx.Client, settings: AccountSettings, path: str, *, allow_missing=False) -> dict | None:
     try:
         response = provider.get(path, headers={"Authorization": f"Bearer {settings.secret_key}"})
         if response.status_code == 404:
+            if allow_missing:
+                return None
             raise sign_in_required()
         response.raise_for_status()
         record = response.json()
@@ -123,23 +133,34 @@ def clerk_record(provider: httpx.Client, settings: AccountSettings, path: str) -
     return record
 
 
+@dataclass(frozen=True)
+class DriverIdentity:
+    subject: str
+    email: str
+    session_created_at: int
+
+
 def verified_identity(authorization: str | None, settings: AccountSettings,
-                      provider: httpx.Client) -> tuple[str, str]:
+                      provider: httpx.Client) -> DriverIdentity:
     claims = session_claims(authorization, settings.web_origin, settings.issuer, settings.jwt_key)
-    if claims is None or claims.get("azp") != settings.web_origin or claims.get("sts") not in (None, "active"):
+    if (claims is None or claims.get("azp") != settings.web_origin
+            or claims.get("sts") not in (None, "active") or claims.get("act") is not None):
         raise sign_in_required()
     subject, sid = claims.get("sub"), claims["sid"]
     if not isinstance(subject, str) or not SUBJECT.fullmatch(subject) or not SESSION.fullmatch(sid):
         raise sign_in_required()
 
     session = clerk_record(provider, settings, f"sessions/{sid}")
-    if session.get("id") != sid or session.get("user_id") != subject or session.get("status") != "active":
+    if session.get("id") != sid or session.get("user_id") != subject:
         raise sign_in_required()
     user = clerk_record(provider, settings, f"users/{subject}")
     if user.get("id") != subject:
         raise sign_in_required()
     if user.get("banned") or user.get("locked"):
         raise restricted(settings)
+    if session.get("status") != "active":
+        raise sign_in_required()
+    created_at = session.get("created_at")
     primary_id, addresses = user.get("primary_email_address_id"), user.get("email_addresses")
     if isinstance(primary_id, str) and isinstance(addresses, list):
         for address in addresses:
@@ -148,20 +169,29 @@ def verified_identity(authorization: str | None, settings: AccountSettings,
             email, verification = address.get("email_address"), address.get("verification")
             if (isinstance(email, str) and "@" in email and isinstance(verification, dict)
                     and verification.get("status") == "verified"):
-                return subject, email
+                return DriverIdentity(subject, email, created_at if valid_revision(created_at) else 0)
     raise AccountProblem(403, "verification_required", "Verify your email to continue")
 
 
 @contextmanager
-def account_access(engine: Engine, subject: str, settings: AccountSettings):
+def account_access(engine: Engine, identity: DriverIdentity, settings: AccountSettings):
+    subject = identity.subject
     try:
         with engine.begin() as connection:
-            revision = schema_revision(connection, "api")
-            if revision not in ACCOUNT_SCHEMA_REVISIONS:
+            if schema_revision(connection, "api") != ACCOUNT_SCHEMA_REVISION:
                 raise unavailable()
             connection.execute(
                 text("SELECT set_config('rafiq.driver_subject', :subject, true)"), {"subject": subject}
             )
+            lock_identity(connection, subject, shared=True)
+            lifecycle = identity_lifecycle(connection, subject)
+            if lifecycle:
+                if lifecycle["state"] == "deleted":
+                    raise sign_in_required()
+                if lifecycle["state"] == "restricted":
+                    raise restricted(settings)
+                if lifecycle["fresh_session_after"] and identity.session_created_at <= lifecycle["fresh_session_after"]:
+                    raise sign_in_required()
             connection.execute(text("""
                 INSERT INTO rafiq_fixture.driver_accounts (clerk_subject) VALUES (:subject)
                 ON CONFLICT (clerk_subject) DO NOTHING
@@ -172,13 +202,11 @@ def account_access(engine: Engine, subject: str, settings: AccountSettings):
             """), {"subject": subject}).mappings().one()
             if row["restricted"]:
                 raise restricted(settings)
-            publication = None
-            if revision == ACCOUNT_SCHEMA_REVISION:
-                # Publishers take the exclusive form of this lock before changing the version.
-                connection.execute(text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": PUBLICATION_LOCK})
-                publication = connection.execute(text("""
-                    SELECT version, conditions FROM rafiq_fixture.controlled_use_publication WHERE singleton
-                """)).mappings().one_or_none()
+            # Publishers take the exclusive form of this lock before changing the version.
+            connection.execute(text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": PUBLICATION_LOCK})
+            publication = connection.execute(text("""
+                SELECT version, conditions FROM rafiq_fixture.controlled_use_publication WHERE singleton
+            """)).mappings().one_or_none()
             conditions = Conditions.model_validate({
                 **publication["conditions"], "version": publication["version"],
             }) if publication else None
@@ -197,7 +225,8 @@ def account_response(row, email: str, required_version: str, *, published: bool 
     )
 
 
-def create_account_app(settings: AccountSettings, engine: Engine, provider: httpx.Client | None = None):
+def create_account_app(settings: AccountSettings, engine: Engine, provider: httpx.Client | None = None,
+                       *, callback: ClerkCallback | None = None):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if provider is not None:
@@ -257,23 +286,28 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     def ready():
         try:
             with engine.connect() as connection:
-                if schema_ready(connection, "api", account_entry=True):
-                    return {"status": "ready"}
+                if not schema_ready(connection, "api", account_entry=True):
+                    raise unavailable()
+            if callback is not None:
+                with callback.engine.connect() as connection:
+                    if not schema_ready(connection, "callback", account_entry=True):
+                        raise unavailable()
+            return {"status": "ready"}
         except SQLAlchemyError:
             pass
         raise unavailable()
 
     @app.get("/api/v1/account", operation_id="getAccount", response_model=Account)
     def get_account(request: Request, authorization: Annotated[str | None, Header()] = None):
-        subject, email = verified_identity(authorization, settings, request.app.state.clerk)
-        with account_access(engine, subject, settings) as (_, row, conditions):
+        identity = verified_identity(authorization, settings, request.app.state.clerk)
+        with account_access(engine, identity, settings) as (_, row, conditions):
             required = conditions.version if conditions else settings.required_version
-            return account_response(row, email, required, published=conditions is not None)
+            return account_response(row, identity.email, required, published=conditions is not None)
 
     @app.get("/api/v1/account/controlled-use", operation_id="getControlledUse", response_model=Conditions)
     def get_conditions(request: Request, authorization: Annotated[str | None, Header()] = None):
-        subject, _ = verified_identity(authorization, settings, request.app.state.clerk)
-        with account_access(engine, subject, settings) as (_, _, conditions):
+        identity = verified_identity(authorization, settings, request.app.state.clerk)
+        with account_access(engine, identity, settings) as (_, _, conditions):
             if conditions is None:
                 raise unavailable()
             return conditions
@@ -281,11 +315,11 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     @app.put("/api/v1/account/controlled-use", operation_id="acceptControlledUse", response_model=Account)
     def accept_controlled_use(acceptance: Acceptance, request: Request,
                               authorization: Annotated[str | None, Header()] = None):
-        subject, email = verified_identity(authorization, settings, request.app.state.clerk)
+        identity = verified_identity(authorization, settings, request.app.state.clerk)
         if not acceptance.accepted:
             raise AccountProblem(422, "explicit_acceptance_required", "Explicit acceptance is required",
                                  field_errors=[{"pointer": "/accepted", "code": "required"}])
-        with account_access(engine, subject, settings) as (connection, row, conditions):
+        with account_access(engine, identity, settings) as (connection, row, conditions):
             if conditions is None:
                 raise unavailable()
             if acceptance.version != conditions.version:
@@ -293,25 +327,44 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
             updated = connection.execute(text("""
                 UPDATE rafiq_fixture.driver_accounts SET accepted_version = :version
                 WHERE clerk_subject = :subject AND NOT restricted AND accepted_version IS DISTINCT FROM :version
-            """), {"subject": subject, "version": conditions.version})
+            """), {"subject": identity.subject, "version": conditions.version})
             if updated.rowcount == 0:
                 current = connection.execute(text("""
                     SELECT restricted, accepted_version FROM rafiq_fixture.driver_accounts WHERE clerk_subject = :subject
-                """), {"subject": subject}).mappings().one()
+                """), {"subject": identity.subject}).mappings().one()
                 if current["restricted"]:
                     raise restricted(settings)
                 if current["accepted_version"] != conditions.version:
                     raise unavailable()
-            return account_response({**row, "accepted_version": conditions.version}, email, conditions.version)
+            return account_response({**row, "accepted_version": conditions.version}, identity.email, conditions.version)
 
     def private_context(request: Request, authorization: str | None,
-                        destination: Literal["dashboard", "readiness"]) -> DriverEntryContext:
-        subject, _ = verified_identity(authorization, settings, request.app.state.clerk)
-        with account_access(engine, subject, settings) as (_, row, conditions):
+                        destination: Literal["dashboard", "readiness"],
+                        link_id: str | None = None) -> DriverEntryContext | WorkspaceLinkContext:
+        identity = verified_identity(authorization, settings, request.app.state.clerk)
+        with account_access(engine, identity, settings) as (connection, row, conditions):
             if conditions is None:
                 raise unavailable()
             if row["accepted_version"] != conditions.version:
                 raise AccountProblem(403, "controlled_use_required", "Accept current controlled-use conditions")
+            if link_id is not None:
+                problem = AccountProblem(404, "resource_unavailable", "Resource unavailable")
+                try:
+                    reference = UUID(link_id)
+                except ValueError:
+                    raise problem from None
+                expires_in_ms = connection.execute(text("""
+                    SELECT floor(extract(epoch FROM expires_at - statement_timestamp()) * 1000)::bigint
+                    FROM rafiq_fixture.workspace_links
+                    WHERE id = :reference AND driver_id = :owner
+                      AND deleted_at IS NULL AND expires_at > statement_timestamp()
+                """), {"reference": reference, "owner": row["id"]}).scalar_one_or_none()
+                if not expires_in_ms:
+                    raise problem
+                return WorkspaceLinkContext(
+                    destination=destination, accountId=row["id"], acceptedVersion=conditions.version,
+                    expiresInMs=expires_in_ms,
+                )
             return DriverEntryContext(
                 destination=destination, accountId=row["id"], acceptedVersion=conditions.version,
             )
@@ -324,8 +377,41 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     def readiness(request: Request, authorization: Annotated[str | None, Header()] = None):
         return private_context(request, authorization, "readiness")
 
+    @app.get("/api/v1/account/links/{link_id}", operation_id="resolveWorkspaceLink", response_model=WorkspaceLinkContext)
+    def workspace_link(link_id: str, request: Request, authorization: Annotated[str | None, Header()] = None):
+        return private_context(request, authorization, "dashboard", link_id)
+
+    @app.post("/webhooks/clerk", operation_id="receiveClerkEvent")
+    async def receive_clerk_event(request: Request):
+        if callback is None:
+            raise unavailable()
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 256 * 1024:
+                raise AccountProblem(400, "malformed_request", "Malformed request")
+            body.extend(chunk)
+        headers = {key: request.headers.get(key, "") for key in ("svix-id", "svix-timestamp", "svix-signature")}
+
+        def lookup_user(subject: str):
+            return clerk_record(request.app.state.clerk, settings, f"users/{subject}", allow_missing=True)
+
+        try:
+            await run_in_threadpool(callback.receive, bytes(body), headers, lookup_user)
+        except InvalidCallback:
+            raise AccountProblem(400, "invalid_callback", "Invalid callback") from None
+        except (LifecycleUnavailable, SQLAlchemyError):
+            raise unavailable() from None
+        return Response(status_code=200)
+
     return app
 
 
 def from_environment():
-    return create_account_app(AccountSettings.from_environment(os.environ), engine_for("api"))
+    settings = AccountSettings.from_environment(os.environ)
+    instance = os.environ.get("CLERK_INSTANCE_ID")
+    signing = os.environ.get("CLERK_WEBHOOK_SIGNING_SECRET")
+    callback_url = os.environ.get("RAFIQ_CALLBACK_DATABASE_URL")
+    if any((instance, signing, callback_url)) and not all((instance, signing, callback_url)):
+        raise ValueError("Clerk callback requires an instance ID, signing secret and database connection")
+    callback = ClerkCallback(engine_for("callback"), instance, signing) if instance and signing else None
+    return create_account_app(settings, engine_for("api"), callback=callback)

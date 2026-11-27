@@ -1,42 +1,47 @@
 'use client';
 
 import { useAuth, useSignIn } from '@clerk/nextjs';
+import { isClerkAPIResponseError } from '@clerk/nextjs/errors';
 import Link from 'next/link';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { clerkAction, useEntryRequest } from '../account-entry/request';
+import { RestrictedAccountMessage } from '../account-entry/restricted-account';
 import { accountPath, signInPath, type EntryContext } from '../account-entry/return';
 import { VerifyEmail } from '../account-entry/verify-email';
 import { RecoverAccess } from './recover-access';
 
 export type ClerkSignIn = ReturnType<typeof useSignIn>['signIn'];
 
-type Props = { entry: EntryContext; recover: boolean; registrationOpen: boolean };
+type Props = { entry: EntryContext; recover: boolean; registrationOpen: boolean; supportContact?: string };
 
-export function DriverAccess({ entry, recover, registrationOpen }: Props) {
+export function DriverAccess({ entry, recover, registrationOpen, supportContact }: Props) {
   const { isLoaded, isSignedIn } = useAuth();
   const { signIn } = useSignIn();
   if (!isLoaded || !signIn) return <p role="status">Loading secure account access…</p>;
   if (isSignedIn) return <Link href={accountPath(entry)}>Check account status</Link>;
   return recover ? <RecoverAccess signIn={signIn} entry={entry} />
-    : <PasswordSignIn signIn={signIn} entry={entry} registrationOpen={registrationOpen} />;
+    : <PasswordSignIn signIn={signIn} entry={entry} registrationOpen={registrationOpen} supportContact={supportContact} />;
 }
 
-function PasswordSignIn({ signIn, entry, registrationOpen }: Omit<Props, 'recover'> & { signIn: ClerkSignIn }) {
+function PasswordSignIn({ signIn, entry, registrationOpen, supportContact }: Omit<Props, 'recover'> & { signIn: ClerkSignIn }) {
   const { pending, throttled, run } = useEntryRequest();
   const [email, setEmail] = useState('');
   const [challenge, setChallenge] = useState<string | null>(null);
   const [feedback, setFeedback] = useState('');
+  const [restricted, setRestricted] = useState(false);
+  const restrictionHeading = useRef<HTMLHeadingElement>(null);
   const address = useRef<HTMLInputElement>(null);
   const password = useRef<HTMLInputElement>(null);
   const focusAddress = useRef(false);
   const busy = Boolean(pending);
 
   useEffect(() => {
-    if (!challenge && focusAddress.current) {
+    if (restricted) restrictionHeading.current?.focus();
+    else if (!challenge && focusAddress.current) {
       focusAddress.current = false;
       address.current?.focus();
     }
-  }, [challenge]);
+  }, [challenge, restricted]);
 
   async function finish(verified = false) {
     let navigating = false;
@@ -48,6 +53,25 @@ function PasswordSignIn({ signIn, entry, registrationOpen }: Omit<Props, 'recove
       },
     }));
     return navigating;
+  }
+
+  function showRestriction(code: string) {
+    if (code !== 'user_banned' && code !== 'user_locked') return false;
+    setEmail('');
+    setChallenge(null);
+    setRestricted(true);
+    return true;
+  }
+
+  async function runChallenge<Result>(action: () => Promise<Result>, interrupted: Result) {
+    try {
+      return await action();
+    } catch (error) {
+      if (isClerkAPIResponseError(error) && showRestriction(error.errors[0]?.code ?? '')) {
+        return interrupted;
+      }
+      throw error;
+    }
   }
 
   function submit(event: FormEvent) {
@@ -69,19 +93,29 @@ function PasswordSignIn({ signIn, entry, registrationOpen }: Omit<Props, 'recove
       if (signIn.status === 'complete' && await finish()) return;
       setFeedback('We couldn’t complete sign-in. Try again or recover access.');
     }, (failure) => {
+      if (showRestriction(failure)) return;
       setFeedback(failure === 'rate_limited' ? 'Too many attempts. Wait before trying again.'
         : 'Check your email and password, then try again.');
       password.current?.focus();
     });
   }
 
+  if (restricted) return <>
+    <h1 ref={restrictionHeading} tabIndex={-1}>Account restricted</h1>
+    <RestrictedAccountMessage supportContact={supportContact} />
+    <button className="entry-action" onClick={() => {
+      focusAddress.current = true;
+      setRestricted(false);
+    }}>Sign in</button>
+  </>;
+
   if (challenge) return <>
     <VerifyEmail address={challenge}
-      send={() => clerkAction(signIn.mfa.sendEmailCode())}
-      verify={async (code) => {
+      send={() => runChallenge(() => clerkAction(signIn.mfa.sendEmailCode()), undefined)}
+      verify={(code) => runChallenge(async () => {
         await clerkAction(signIn.mfa.verifyEmailCode({ code }));
         return signIn.status === 'complete' && await finish(true);
-      }}
+      }, false)}
       changeEmail={async () => {
         await clerkAction(signIn.reset());
         focusAddress.current = true;

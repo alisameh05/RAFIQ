@@ -20,14 +20,16 @@ async function signInFixture(page: Page, driver: string, session = driver) {
   ]);
   await page.route('https://clerk.example.test/**', (route) => route.abort());
   await page.addInitScript(({ userId, sessionId, token }) => {
-    const session = {
-      id: sessionId, status: 'active', getToken: async () => token,
-      lastActiveToken: { jwt: { claims: { sub: userId, sid: sessionId, sts: 'active' } } },
+    const authority = (userId: string, sessionId: string, token: string) => {
+      const session = {
+        id: sessionId, status: 'active', getToken: async () => token,
+        lastActiveToken: { jwt: { claims: { sub: userId, sid: sessionId, sts: 'active' } } },
+      };
+      return { client: { sessions: [session] }, session, user: { id: userId }, organization: null };
     };
-    const user = { id: userId };
-    const client = { sessions: [session] };
-    const resources = { client, session, user, organization: null };
-    Object.defineProperty(window, 'Clerk', { value: {
+    let resources = authority(userId, sessionId, token);
+    const listeners = new Set<(resources: object) => void>();
+    const clerk = {
       loaded: true, ...resources,
       __internal_lastEmittedResources: resources,
       on(event: string, listener: (status: string) => void) {
@@ -35,15 +37,23 @@ async function signInFixture(page: Page, driver: string, session = driver) {
       },
       off() {},
       addListener(listener: (resources: object) => void) {
+        listeners.add(listener);
         queueMicrotask(() => listener(resources));
-        return () => {};
+        return () => listeners.delete(listener);
       },
       async signOut({ redirectUrl }: { redirectUrl: string }) {
         document.cookie = '__session=; path=/; max-age=0';
         document.cookie = '__client_uat=; path=/; max-age=0';
         window.location.assign(redirectUrl);
       },
-    } });
+    };
+    Object.defineProperty(window, 'Clerk', { value: clerk });
+    window.addEventListener('rafiq-fixture-switch', (event) => {
+      const detail = (event as CustomEvent<{ userId: string; sessionId: string; token: string }>).detail;
+      resources = authority(detail.userId, detail.sessionId, detail.token);
+      Object.assign(clerk, resources, { __internal_lastEmittedResources: resources });
+      for (const listener of listeners) listener(resources);
+    });
   }, { userId, sessionId, token });
 }
 
@@ -54,6 +64,8 @@ test.beforeEach(() => {
 test('a signed-out readiness link carries a fixed entry, and external or ambiguous returns are dropped', async ({ request }) => {
   const readiness = await request.get(origin + '/account/readiness', { maxRedirects: 0 });
   expect(readiness.headers().location).toBe('/sign-in?entry=readiness');
+  const workspaceLink = await request.get(origin + '/account/links/' + linkId, { maxRedirects: 0 });
+  expect(workspaceLink.headers().location).toBe('/sign-in?entry=account');
   for (const query of ['entry=https://outside.example', 'entry=readiness&entry=dashboard', 'entry=/account/readiness']) {
     const rejected = await request.get(origin + '/account?' + query, { maxRedirects: 0 });
     expect(rejected.headers().location).toBe('/sign-in?entry=account');
@@ -179,3 +191,187 @@ test('a fresh session for the same driver keeps the verified readiness return', 
   await expect(page).toHaveURL(origin + '/account/readiness');
   await expect(page.getByRole('heading', { name: 'Stationary readiness' })).toBeFocused();
 });
+
+const linkId = '4de23697-05fa-4cad-8492-c0df246423a1';
+const linkPath = '/account/links/' + linkId;
+const syntheticAccount = 'synthetic-private-account-from-api';
+
+test('P08 hides the workspace on expiry and uses the same neutral return for unavailable links', async ({ page }) => {
+  await signInFixture(page, 'fixtureA');
+  await page.clock.install();
+  await page.setViewportSize({ width: 320, height: 760 });
+  let available = true;
+  await page.route(api + '**', (route) => {
+    const suffix = new URL(route.request().url()).pathname.slice('/api/v1/account'.length);
+    if (!suffix) return route.fulfill({ json: { accountId: syntheticAccount, status: 'active', verified: true } });
+    if (suffix !== '/workspace' && (!available || !suffix.endsWith(linkId))) {
+      return route.fulfill({ status: 404, json: { code: 'resource_unavailable' } });
+    }
+    return route.fulfill({ json: {
+      accountId: syntheticAccount, destination: 'dashboard', acceptedVersion: 'controlled-use-1',
+      expiresInMs: 60_000,
+    } });
+  });
+  const documentResponse = await page.goto(origin + linkPath);
+  expect(documentResponse?.headers()['cache-control']).toContain('no-store');
+  expect(await documentResponse!.text()).not.toContain(syntheticAccount);
+  const start = page.getByRole('link', { name: 'Start session' });
+  await expect(start).toBeVisible();
+
+  available = false;
+  await page.clock.runFor(10_100);
+  const unavailable = page.getByRole('heading', { name: 'Unavailable link' });
+  await expect(unavailable).toBeFocused();
+  await expect(start).toHaveCount(0);
+  await expect(page.getByText('This item is unavailable.', { exact: true })).toBeVisible();
+  await page.keyboard.press('Tab');
+  const safeReturn = page.getByRole('link', { name: 'Return to Dashboard' });
+  await expect(safeReturn).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(origin + '/account/dashboard');
+  await expect(start).toBeVisible();
+  await page.goBack();
+  await expect(unavailable).toBeVisible();
+  await expect(start).toHaveCount(0);
+
+  await page.goto(origin + '/account/links/missing');
+  await expect(unavailable).toBeFocused();
+  await expect(page.getByText('This item is unavailable.', { exact: true })).toBeVisible();
+  await expect(safeReturn).toHaveAttribute('href', '/account/dashboard');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
+});
+
+test('P08 conceals link actions at the known expiration before the next account check', async ({ page }) => {
+  await signInFixture(page, 'fixtureA');
+  await page.clock.install();
+  await page.route(api + '**', (route) => route.fulfill({ json: route.request().url() === api
+    ? { accountId: syntheticAccount, status: 'active', verified: true }
+    : { accountId: syntheticAccount, destination: 'dashboard', acceptedVersion: 'controlled-use-1', expiresInMs: 2500 },
+  }));
+  await page.goto(origin + linkPath);
+  await expect(page.getByRole('link', { name: 'Start session' })).toBeVisible();
+  await page.clock.runFor(2600);
+  await expect(page.getByRole('heading', { name: 'Unavailable link' })).toBeFocused();
+  await expect(page.getByRole('link', { name: 'Start session' })).toHaveCount(0);
+});
+
+test('P07 clears another tab during a delayed response and offers a fresh sign-in', async ({ page, context }) => {
+  const sibling = await context.newPage();
+  for (const tab of [page, sibling]) {
+    await signInFixture(tab, 'fixtureA');
+    await tab.clock.install();
+  }
+  let restricted = false;
+  let notifyStarted!: () => void;
+  const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  for (const tab of [page, sibling]) {
+    await tab.route(api + '**', async (route) => {
+      const url = route.request().url();
+      if (url === api) return route.fulfill({ json: { accountId: syntheticAccount, status: 'active', verified: true } });
+      if (url.endsWith(linkId)) {
+        notifyStarted();
+        await delayed;
+      } else if (restricted) {
+        return route.fulfill({ status: 403, json: {
+          code: 'account_restricted', supportContact: 'support@example.net',
+        } });
+      }
+      await route.fulfill({ json: {
+        accountId: syntheticAccount, destination: 'dashboard', acceptedVersion: 'controlled-use-1',
+        expiresInMs: 60_000,
+      } }).catch(() => {});
+    });
+  }
+  await page.goto(origin + '/account/dashboard');
+  await expect(page.getByRole('link', { name: 'Start session' })).toBeVisible();
+  await sibling.goto(origin + linkPath);
+  await started;
+  restricted = true;
+  await page.clock.runFor(10_100);
+  for (const tab of [page, sibling]) {
+    await expect(tab.getByRole('heading', { name: 'Account restricted' })).toBeVisible();
+    await expect(tab.getByRole('link', { name: 'Start session' })).toHaveCount(0);
+    await expect(tab.getByText('New sessions and hosted synchronization are blocked.')).toBeVisible();
+  }
+  release();
+  await expect(sibling.getByRole('heading', { name: 'Account restricted' })).toBeFocused();
+  await sibling.keyboard.press('Tab');
+  const support = sibling.getByRole('link', { name: 'support@example.net' });
+  await expect(support).toBeFocused();
+  await expect(support).toHaveAttribute('href', 'mailto:support@example.net');
+  await sibling.keyboard.press('Tab');
+  await expect(sibling.getByRole('button', { name: 'Sign in' })).toBeFocused();
+  await sibling.keyboard.press('Enter');
+  await expect(sibling).toHaveURL(origin + '/sign-in?entry=account');
+});
+
+test('switching drivers invalidates the previous session across tabs without reopening its late response', async ({ page, context }) => {
+  const sibling = await context.newPage();
+  for (const tab of [page, sibling]) await signInFixture(tab, 'fixtureA');
+  let notifyStarted!: () => void;
+  const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  for (const tab of [page, sibling]) {
+    await tab.route(api + '**', async (route) => {
+      const request = route.request();
+      const secondDriver = request.headers().authorization === 'Bearer synthetic-driver-B';
+      const accountId = secondDriver ? 'synthetic-private-account-b' : syntheticAccount;
+      if (request.url() === api) return route.fulfill({ json: { accountId, status: 'active', verified: true } });
+      if (request.url().endsWith(linkId)) {
+        if (secondDriver) return route.fulfill({ status: 404, json: { code: 'resource_unavailable' } });
+        if (tab === sibling) {
+          notifyStarted();
+          await delayed;
+        }
+      }
+      await route.fulfill({ json: { accountId, destination: 'dashboard', acceptedVersion: 'controlled-use-1', expiresInMs: 60_000 } }).catch(() => {});
+    });
+  }
+  await page.goto(origin + linkPath);
+  await expect(page.getByRole('link', { name: 'Start session' })).toBeVisible();
+  await sibling.goto(origin + linkPath);
+  await started;
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rafiq-fixture-switch', { detail: {
+    userId: 'user_fixtureB', sessionId: 'sess_fixtureB', token: 'synthetic-driver-B',
+  } })));
+  await expect(page.getByRole('heading', { name: 'Unavailable link' })).toBeFocused();
+  await expect(sibling.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible();
+  release();
+  for (const tab of [page, sibling]) {
+    await expect(tab.getByRole('link', { name: 'Start session' })).toHaveCount(0);
+    await expect(tab.getByText(syntheticAccount)).toHaveCount(0);
+  }
+});
+
+for (const trigger of ['expiry', 'sign-out'] as const) {
+  test('clears private actions in both tabs on ' + trigger, async ({ page, context }) => {
+    const sibling = await context.newPage();
+    let expired = false;
+    for (const tab of [page, sibling]) {
+      await signInFixture(tab, 'fixtureA');
+      await tab.clock.install();
+      await tab.route(api + '**', (route) => {
+        if (expired) return route.fulfill({ status: 401, json: { code: 'authentication_required' } });
+        const response = route.request().url() === api
+          ? { accountId: syntheticAccount, status: 'active', verified: true }
+          : { accountId: syntheticAccount, destination: 'dashboard', acceptedVersion: 'controlled-use-1' };
+        return route.fulfill({ json: response });
+      });
+      await tab.goto(origin + '/account/dashboard');
+      await expect(tab.getByRole('link', { name: 'Start session' })).toBeVisible();
+    }
+    if (trigger === 'expiry') {
+      expired = true;
+      await page.clock.runFor(10_100);
+      await expect(page.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible();
+    } else {
+      await page.getByRole('button', { name: 'Sign out' }).press('Enter');
+      await expect(page).toHaveURL(origin + '/');
+    }
+    await expect(sibling.getByRole('heading', { name: 'Sign in to continue' })).toBeFocused();
+    await expect(sibling.getByRole('link', { name: 'Start session' })).toHaveCount(0);
+  });
+}
