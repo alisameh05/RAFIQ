@@ -65,8 +65,11 @@ class Account(BaseModel):
 
 
 class AccountProblem(Exception):
-    def __init__(self, status: int, code: str, title: str, detail: str | None = None):
-        self.status, self.code, self.title, self.detail = status, code, title, detail
+    def __init__(self, status: int, code: str, title: str, support_contact: str | None = None):
+        self.status = status
+        self.code = code
+        self.title = title
+        self.support_contact = support_contact
 
 
 def sign_in_required() -> AccountProblem:
@@ -78,8 +81,7 @@ def unavailable() -> AccountProblem:
 
 
 def restricted(settings: AccountSettings) -> AccountProblem:
-    detail = f"Contact RAFIQ support at {settings.support_contact}." if settings.support_contact else None
-    return AccountProblem(403, "account_restricted", "Account restricted", detail)
+    return AccountProblem(403, "account_restricted", "Account access restricted", settings.support_contact)
 
 
 def clerk_record(provider: httpx.Client, settings: AccountSettings, path: str) -> dict:
@@ -128,7 +130,7 @@ def verified_identity(authorization: str | None, settings: AccountSettings,
 def resolve_account(engine: Engine, subject: str, email: str, settings: AccountSettings) -> Account:
     try:
         with engine.begin() as connection:
-            if not schema_ready(connection, "api"):
+            if not schema_ready(connection, "api", account_entry=True):
                 raise unavailable()
             connection.execute(
                 text("SELECT set_config('rafiq.driver_subject', :subject, true)"), {"subject": subject}
@@ -178,10 +180,10 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
 
     @app.exception_handler(AccountProblem)
     async def account_problem(request: Request, error: AccountProblem):
-        payload = {"type": "about:blank", "title": error.title, "status": error.status,
+        payload = {"type": f"urn:rafiq:problem:{error.code}", "title": error.title, "status": error.status,
                    "code": error.code, "requestId": request.state.request_id}
-        if error.detail:
-            payload["detail"] = error.detail
+        if error.support_contact:
+            payload["supportContact"] = error.support_contact
         return JSONResponse(
             payload,
             status_code=error.status, media_type="application/problem+json",
@@ -196,7 +198,7 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     def ready():
         try:
             with engine.connect() as connection:
-                if schema_ready(connection, "api"):
+                if schema_ready(connection, "api", account_entry=True):
                     return {"status": "ready"}
         except SQLAlchemyError:
             pass

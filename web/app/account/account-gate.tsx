@@ -27,7 +27,7 @@ function SignedInGate({ apiOrigin, getToken }: { apiOrigin: string | null; getTo
   const [attempt, setAttempt] = useState(0);
   const [gate, setGate] = useState<Gate>('checking');
   const [verified, setVerified] = useState(false);
-  const [restrictionDetail, setRestrictionDetail] = useState<string | null>(null);
+  const [supportContact, setSupportContact] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -44,6 +44,7 @@ function SignedInGate({ apiOrigin, getToken }: { apiOrigin: string | null; getTo
           headers: { Authorization: 'Bearer ' + token },
           cache: 'no-store', signal: controller.signal, redirect: 'error',
         });
+        if (controller.signal.aborted) return;
         if (response.status === 401) {
           setGate('signIn');
           return;
@@ -55,7 +56,7 @@ function SignedInGate({ apiOrigin, getToken }: { apiOrigin: string | null; getTo
           return;
         }
         if (response.status === 403 && result.code === 'account_restricted') {
-          setRestrictionDetail(typeof result.detail === 'string' ? result.detail : null);
+          setSupportContact(typeof result.supportContact === 'string' ? result.supportContact : null);
           setGate('restricted');
           return;
         }
@@ -83,7 +84,7 @@ function SignedInGate({ apiOrigin, getToken }: { apiOrigin: string | null; getTo
       <h1>{titles[gate]}</h1>
       {gate === 'onboardingRequired' && <p>Review and accept RAFIQ’s controlled-use conditions before using the workspace. This step will be available when onboarding opens.</p>}
       {gate === 'active' && <p>Your account is verified. The private workspace is pending release.</p>}
-      {gate === 'restricted' && <p>{restrictionDetail ?? 'Private access is currently unavailable for this account.'}</p>}
+      {gate === 'restricted' && <p>{supportContact ? "Contact RAFIQ support at " + supportContact + "." : 'Private access is currently unavailable for this account.'}</p>}
       {gate === 'verificationRequired' && <p>Confirm your email with Clerk before continuing.</p>}
       {gate === 'unavailable' && (
         <button className="entry-action" onClick={() => {

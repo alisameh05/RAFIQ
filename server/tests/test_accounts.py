@@ -26,14 +26,14 @@ def accounts():
     public = key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode()
-    settings = AccountSettings(WEB, ISSUER, public, "sk_test_synthetic", "controlled-use-1")
+    settings = AccountSettings(WEB, ISSUER, public, "sk_test_synthetic", "controlled-use-1", "support@example.net")
     engine = engine_for("api")
     subjects = {}
 
-    def session(*, verified=True, status="active", claims=None):
+    def session(*, verified=True, status="active", banned=False, claims=None):
         subject = f"user_{uuid4().hex}"
         sid = f"sess_{uuid4().hex}"
-        subjects[sid] = (subject, verified, status)
+        subjects[sid] = (subject, verified, status, banned)
         now = int(time())
         token = jwt.encode({
             "iss": ISSUER, "azp": WEB, "sub": subject, "sid": sid,
@@ -45,11 +45,11 @@ def accounts():
         assert request.headers["authorization"] == "Bearer sk_test_synthetic"
         identifier = request.url.path.rsplit("/", 1)[1]
         if request.url.path.startswith("/v1/sessions/"):
-            subject, _, status = subjects[identifier]
+            subject, _, status, _ = subjects[identifier]
             return httpx.Response(200, json={"id": identifier, "user_id": subject, "status": status})
-        _, verified, _ = next(entry for entry in subjects.values() if entry[0] == identifier)
+        _, verified, _, banned = next(entry for entry in subjects.values() if entry[0] == identifier)
         return httpx.Response(200, json={
-            "id": identifier, "primary_email_address_id": "idn_primary",
+            "id": identifier, "primary_email_address_id": "idn_primary", "banned": banned,
             "email_addresses": [
                 {"id": "idn_secondary", "email_address": "secondary@example.net",
                  "verification": {"status": "verified"}},
@@ -125,3 +125,15 @@ def test_runtime_role_cannot_read_write_across_drivers_or_change_eligibility(acc
             connection.execute(text(f"SELECT id FROM {TABLE}"))
     finally:
         worker.dispose()
+
+def test_restricted_driver_receives_only_the_problem_and_published_contact(accounts):
+    client, session, _ = accounts
+    _, headers = session(banned=True)
+    response = client.get(ACCOUNT, headers=headers)
+    assert response.status_code == 403
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == {
+        "type": "urn:rafiq:problem:account_restricted", "title": "Account access restricted",
+        "status": 403, "code": "account_restricted", "supportContact": "support@example.net",
+        "requestId": response.headers["x-request-id"],
+    }

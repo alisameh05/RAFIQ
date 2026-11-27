@@ -230,7 +230,7 @@ function SignupForm({ signUp }: { signUp: ClerkSignup }) {
             <strong>{address}</strong> to verify your email.
           </p>
           {editEmail !== null ? (
-            <form onSubmit={correctAddress}>
+            <form method="post" onSubmit={correctAddress}>
               <label htmlFor="corrected-email">Corrected email address</label>
               <input id="corrected-email" ref={emailInput} type="email" autoComplete="email"
                 value={editEmail} onChange={(event) => setEditEmail(event.target.value)} required readOnly={disabled}
@@ -255,7 +255,7 @@ function SignupForm({ signUp }: { signUp: ClerkSignup }) {
                 setNotice('');
                 moveFocus('email');
               }}>Change email</button>
-              <form onSubmit={verify}>
+              <form method="post" onSubmit={verify}>
                 <label htmlFor="signup-code">Verification code</label>
                 <div className="entry-code">
                   {Array.from({ length: 6 }, (_, index) => (
@@ -263,7 +263,7 @@ function SignupForm({ signUp }: { signUp: ClerkSignup }) {
                       data-caret={index === Math.min(5, selection[0]) && selection[0] === selection[1] ? '' : undefined}
                       data-selected={index >= selection[0] && index < selection[1] ? '' : undefined}>{code[index]}</span>
                   ))}
-                  <input id="signup-code" name="code" type="text" inputMode="numeric" autoComplete="one-time-code"
+                  <input id="signup-code" type="text" inputMode="numeric" autoComplete="one-time-code"
                     spellCheck={false} ref={codeInput} value={code} readOnly={disabled || resendFirst}
                     aria-invalid={errorFor('code')} aria-describedby={errorFor('code') ? 'signup-error' : 'verification-destination'}
                     onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
@@ -283,14 +283,14 @@ function SignupForm({ signUp }: { signUp: ClerkSignup }) {
       ) : (
         <>
           <p>RAFIQ is for adults 18 and older.</p>
-          <form onSubmit={register}>
+          <form method="post" onSubmit={register}>
             <label htmlFor="signup-email">Email address</label>
-            <input id="signup-email" name="emailAddress" ref={emailInput} type="email" autoComplete="email"
+            <input id="signup-email" ref={emailInput} type="email" autoComplete="email"
               required value={email} onChange={(event) => setEmail(event.target.value)} readOnly={disabled}
               aria-invalid={errorFor('email')} aria-describedby={errorFor('email') ? 'signup-error' : undefined} />
             {errorFor('email') && errorText}
             <label htmlFor="signup-password">Password</label>
-            <input id="signup-password" name="password" ref={passwordInput} type="password" autoComplete="new-password"
+            <input id="signup-password" ref={passwordInput} type="password" autoComplete="new-password"
               required readOnly={disabled}
               aria-invalid={errorFor('password')}
               aria-describedby={errorFor('password') ? 'signup-password-help signup-error' : 'signup-password-help'} />
