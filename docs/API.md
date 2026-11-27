@@ -92,6 +92,7 @@ The browser clears decrypted views and active keys across tabs on sign-out, acco
 | M01 | `GET /api/v1/account/controlled-use` | `getControlledUse` |
 | M01 | `PUT /api/v1/account/controlled-use` | `acceptControlledUse` |
 | M01 | `GET /api/v1/account/workspace` | `getDriverWorkspace` |
+| M01 | `GET /api/v1/account/links/{link_id}` | `resolveWorkspaceLink` |
 | M01 | `POST /api/v1/account/readiness` | `prepareReadinessHandoff` |
 | M01 | `PATCH /api/v1/account` | `updateAccount` |
 | M01 | `GET /api/v1/account/preferences` | `getPreferences` |
@@ -327,6 +328,30 @@ paths:
         "401": {"$ref":"#/components/responses/Http401"}
         "403": {"$ref":"#/components/responses/Http403"}
         "503": {"$ref":"#/components/responses/Http503"}
+  "/api/v1/account/links/{link_id}":
+    get:
+      operationId: "resolveWorkspaceLink"
+      tags: ["M01"]
+      description: "Resolve an unexpired, undeleted workspace link owned by the current eligible driver. Return the same unavailable problem for a malformed, unknown, expired, deleted or other-owner link."
+      x-authority: "Verified eligible driver · current controlled-use acceptance · current link owner"
+      parameters:
+        - name: "link_id"
+          in: "path"
+          required: true
+          schema: {"type":"string","format":"uuid"}
+      responses:
+        "200":
+          description: "Authorized Dashboard context."
+          headers:
+            X-Request-Id: {"$ref":"#/components/headers/RequestId"}
+            Cache-Control: {"$ref":"#/components/headers/CachePrivate"}
+          content:
+            "application/json":
+              schema: {"$ref":"#/components/schemas/DriverEntryContext"}
+        "401": {"$ref":"#/components/responses/Http401"}
+        "403": {"$ref":"#/components/responses/Http403"}
+        "404": {"$ref":"#/components/responses/Http404"}
+        "503": {"$ref":"#/components/responses/Http503"}
   "/api/v1/account/readiness":
     post:
       operationId: "prepareReadinessHandoff"
@@ -394,7 +419,7 @@ paths:
     post:
       operationId: "receiveClerkEvent"
       tags: ["M01"]
-      description: "Verify Svix headers against the raw body. Deduplicate and reconcile the authoritative Clerk identity lifecycle and timestamps for verified access and adoption. Reject stale projections and apply current deletion and suspension state. Ignore authenticated unrelated events after validation."
+      description: "Verify Svix headers against the raw body and configured Clerk instance. Deduplicate verified deliveries and reconcile lifecycle against the Clerk Backend API. Preserve deletion and current restriction against stale updates. After a restriction is lifted, require a Clerk session created after reinstatement. Ignore authenticated unrelated events."
       x-authority: "Verified clerk callback"
       security: [{"clerkSignature":[]}]
       parameters: [{"$ref":"#/components/parameters/SvixId"},{"$ref":"#/components/parameters/SvixTimestamp"},{"$ref":"#/components/parameters/SvixSignature"}]

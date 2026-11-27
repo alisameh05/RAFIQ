@@ -5,8 +5,12 @@ import { signInPath, type EntryContext, type PrivateDestination } from '../accou
 import { EntryIdentity, EntryShell } from '../account-entry/shell';
 import { AccountGate } from './account-gate';
 
-export async function AccountEntry({ entry, destination }: { entry: EntryContext; destination?: PrivateDestination }) {
+export async function AccountEntry({ entry, destination, linkId }: {
+  entry: EntryContext;
+  destination?: PrivateDestination;
+  linkId?: string;
+}) {
   if (!accountEntryEnabled()) notFound();
   if (!(await auth()).userId) redirect(signInPath(entry));
-  return <EntryIdentity><EntryShell><AccountGate apiOrigin={accountApiOrigin()} entry={entry} destination={destination} /></EntryShell></EntryIdentity>;
+  return <EntryIdentity><EntryShell><AccountGate apiOrigin={accountApiOrigin()} entry={entry} destination={destination} linkId={linkId} /></EntryShell></EntryIdentity>;
 }

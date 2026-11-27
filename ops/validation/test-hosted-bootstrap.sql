@@ -6,22 +6,27 @@ SET ROLE validation_admin;
 CREATE ROLE rafiq_validation_migration NOLOGIN NOINHERIT;
 CREATE ROLE rafiq_validation_api NOLOGIN NOINHERIT;
 CREATE ROLE rafiq_validation_worker NOLOGIN NOINHERIT;
-\i /tmp/rafiq-hosted-bootstrap.sql
+\ir rafiq-hosted-bootstrap.sql
+\ir bootstrap-clerk-callback.sql
 RESET ROLE;
 
 DO $$ BEGIN
     IF (SELECT count(*) FROM pg_roles WHERE rolname IN (
-        'rafiq_validation_migration', 'rafiq_validation_api', 'rafiq_validation_worker', 'rafiq_api', 'rafiq_worker'
+        'rafiq_validation_migration', 'rafiq_validation_api', 'rafiq_validation_worker', 'rafiq_api', 'rafiq_worker',
+        'rafiq_validation_callback', 'rafiq_callback'
     ) AND rolcanlogin) <> 0 THEN RAISE EXCEPTION 'bootstrap enabled login'; END IF;
     IF (SELECT count(*) FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid
         JOIN pg_roles member ON member.oid=m.member
         WHERE (parent.rolname, member.rolname) IN (('rafiq_api', 'rafiq_validation_api'),
-                                                    ('rafiq_worker', 'rafiq_validation_worker'))
-          AND m.inherit_option AND NOT m.set_option AND NOT m.admin_option) <> 2 THEN
+                                                    ('rafiq_worker', 'rafiq_validation_worker'),
+                                                    ('rafiq_callback', 'rafiq_validation_callback'))
+          AND m.inherit_option AND NOT m.set_option AND NOT m.admin_option) <> 3 THEN
         RAISE EXCEPTION 'runtime membership options are incorrect';
     END IF;
     IF has_schema_privilege('rafiq_validation_api', 'rafiq_fixture', 'CREATE') OR
        has_schema_privilege('rafiq_validation_worker', 'rafiq_fixture', 'CREATE') OR
+       has_schema_privilege('rafiq_validation_callback', 'rafiq_fixture', 'CREATE') OR
+       NOT has_schema_privilege('rafiq_validation_callback', 'rafiq_fixture', 'USAGE') OR
        NOT has_schema_privilege('rafiq_validation_migration', 'rafiq_fixture', 'CREATE') THEN
         RAISE EXCEPTION 'schema grants are incorrect';
     END IF;

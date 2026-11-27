@@ -74,6 +74,7 @@ jobs:
           done
           docker exec "$container" pg_isready -q -h 127.0.0.1 -U postgres -d rafiq
           docker cp ops/validation/bootstrap-hosted-database.sql "$container":/tmp/rafiq-hosted-bootstrap.sql
+          docker cp ops/validation/bootstrap-clerk-callback.sql "$container":/tmp/bootstrap-clerk-callback.sql
           docker cp ops/validation/test-hosted-bootstrap.sql "$container":/tmp/test-hosted-bootstrap.sql
           docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d rafiq -f /tmp/test-hosted-bootstrap.sql
       - name: Record runtime and build artifacts
