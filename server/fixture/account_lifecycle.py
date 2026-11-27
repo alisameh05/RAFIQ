@@ -10,7 +10,7 @@ from sqlalchemy.engine import Engine
 from svix.webhooks import Webhook
 
 from fixture.callback import IDENTITY_EVENTS, InvalidCallback, verify_envelope
-from fixture.database import ACCOUNT_SCHEMA_REVISION, schema_revision
+from fixture.database import ACCOUNT_SCHEMA_REVISIONS, schema_revision
 
 SUBJECT = re.compile(r"user_[A-Za-z0-9]{1,128}")
 MAX_REVISION = 2**63 - 1
@@ -41,7 +41,7 @@ class ClerkCallback:
             snapshot_revision = None
         snapshot_restricted = restriction_snapshot(snapshot)
         with self.engine.begin() as connection:
-            if schema_revision(connection, "callback") != ACCOUNT_SCHEMA_REVISION:
+            if schema_revision(connection, "callback") not in ACCOUNT_SCHEMA_REVISIONS:
                 raise LifecycleUnavailable
             inserted = connection.execute(text("""
                 INSERT INTO rafiq_fixture.clerk_callback_receipts

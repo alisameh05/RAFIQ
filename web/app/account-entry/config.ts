@@ -11,6 +11,10 @@ export function signupOpen() {
     && process.env.CLERK_SECRET_KEY?.startsWith('sk_test_') === true;
 }
 
+export function profileIdentityEnabled() {
+  return process.env.RAFIQ_CLERK_PROFILE_ENABLED === 'true';
+}
+
 export function publishedSupportContact(): string | undefined {
   const contact = process.env.RAFIQ_SUPPORT_CONTACT;
   return contact && /^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{1,189}$/.test(contact) ? contact : undefined;

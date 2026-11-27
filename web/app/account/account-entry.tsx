@@ -1,6 +1,6 @@
 import { auth } from '@clerk/nextjs/server';
 import { notFound, redirect } from 'next/navigation';
-import { accountApiOrigin, accountEntryEnabled } from '../account-entry/config';
+import { accountApiOrigin, accountEntryEnabled, profileIdentityEnabled } from '../account-entry/config';
 import { signInPath, type EntryContext, type PrivateDestination } from '../account-entry/return';
 import { EntryIdentity, EntryShell } from '../account-entry/shell';
 import { AccountGate } from './account-gate';
@@ -12,5 +12,6 @@ export async function AccountEntry({ entry, destination, linkId }: {
 }) {
   if (!accountEntryEnabled()) notFound();
   if (!(await auth()).userId) redirect(signInPath(entry));
-  return <EntryIdentity><EntryShell><AccountGate apiOrigin={accountApiOrigin()} entry={entry} destination={destination} linkId={linkId} /></EntryShell></EntryIdentity>;
+  return <EntryIdentity><EntryShell><AccountGate apiOrigin={accountApiOrigin()} entry={entry}
+    destination={destination} linkId={linkId} identityManagementEnabled={profileIdentityEnabled()} /></EntryShell></EntryIdentity>;
 }

@@ -3,10 +3,12 @@
 import { useAuth, useClerk, useUser } from '@clerk/nextjs';
 import Link from 'next/link';
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
-import { accountPath, privateDestination, privatePath, signInPath, type EntryContext, type PrivateDestination } from '../account-entry/return';
+import { accountPath, privateDestination, privatePath, privateTitles, signInPath, type EntryContext, type PrivateDestination } from '../account-entry/return';
 import { RestrictedAccountMessage } from '../account-entry/restricted-account';
 import { VerifyEmail } from '../account-entry/verify-email';
-import { listenForPrivateAccess, notifyPrivateAccess } from './private-access';
+import { hasPendingSignOut, listenForPrivateAccess, notifyPrivateAccess, rememberPendingSignOut, setPendingSignOut } from './private-access';
+import { DriverProfile, type ProfileAccount } from './driver-profile';
+import { DriverNavigation, SettingsLayout } from './settings-layout';
 
 const sections = [
   ['stationary', 'Stationary setup'],
@@ -16,21 +18,48 @@ const sections = [
 ] as const;
 
 type Conditions = { version: string } & Record<(typeof sections)[number][0], string>;
-type View = 'checking' | 'onboarding' | 'dashboard' | 'readiness' | 'restricted' | 'verification' | 'signIn' | 'unavailable' | 'unavailableLink';
-type GateProps = { apiOrigin: string | null; entry: EntryContext; destination?: PrivateDestination; linkId?: string };
+type View = PrivateDestination | 'checking' | 'onboarding' | 'restricted' | 'verification' | 'signIn'
+  | 'unavailable' | 'unavailableLink' | 'signingOut' | 'signOutFailed';
+type GateProps = {
+  apiOrigin: string | null;
+  entry: EntryContext;
+  destination?: PrivateDestination;
+  linkId?: string;
+  identityManagementEnabled: boolean;
+};
+
+function isSettingsEntry(view: View) {
+  return view === 'profile' || view === 'privacy' || view === 'sessions';
+}
+
+function profileAccount(result: Record<string, unknown>): ProfileAccount {
+  if (typeof result.accountId !== 'string'
+      || typeof result.registeredEmail !== 'string' || !result.registeredEmail
+      || (result.displayName !== null && typeof result.displayName !== 'string')) throw new Error();
+  return { accountId: result.accountId, displayName: result.displayName, registeredEmail: result.registeredEmail };
+}
 const returnKey = 'rafiq-readiness-return-driver';
 const destinationRecheckInterval = 10_000;
 
+function forgetReadinessReturn() {
+  try {
+    sessionStorage.removeItem(returnKey);
+  } catch {
+    // Restricted storage has no return context available to clear.
+  }
+}
+
 const titles: Record<View, string> = {
+  ...privateTitles,
   checking: 'Checking account status',
   onboarding: 'Controlled-use onboarding',
-  dashboard: 'Dashboard',
-  readiness: 'Stationary readiness',
   restricted: 'Account restricted',
   verification: 'Verify your email',
   signIn: 'Sign in to continue',
   unavailable: 'Account status unavailable',
   unavailableLink: 'Unavailable link',
+  signingOut: 'Signing out…',
+  signOutFailed: 'Couldn’t sign out',
 };
 
 class GateProblem extends Error {
@@ -40,7 +69,7 @@ class GateProblem extends Error {
 }
 
 export function AccountGate(props: GateProps) {
-  const { isLoaded, userId, sessionId, getToken } = useAuth();
+  const { isLoaded, userId, sessionId } = useAuth();
   const previousAuthority = useRef<{ userId: string; sessionId: string } | null>(null);
   useLayoutEffect(() => {
     if (!isLoaded) return;
@@ -54,19 +83,20 @@ export function AccountGate(props: GateProps) {
   if (!isLoaded) return <p role="status">Checking account status…</p>;
   if (!userId || !sessionId) return <><h1>Sign in to continue</h1><Link href={signInPath(props.entry)}>Sign in</Link></>;
   return <SignedInGate key={JSON.stringify([sessionId, userId, props.entry, props.destination, props.linkId])}
-    {...props} userId={userId} sessionId={sessionId} getToken={getToken} />;
+    {...props} userId={userId} sessionId={sessionId} />;
 }
 
-function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId, getToken }: GateProps & {
+function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId, identityManagementEnabled }: GateProps & {
   userId: string;
   sessionId: string;
-  getToken: () => Promise<string | null>;
 }) {
   const { user } = useUser();
-  const { signOut } = useClerk();
+  const clerk = useClerk();
   const [attempt, setAttempt] = useState(0);
   const [view, setView] = useState<View>('checking');
   const [verified, setVerified] = useState(false);
+  const [profile, setProfile] = useState<ProfileAccount | null>(null);
+  const [profileDraft, setProfileDraft] = useState<{ accountId: string; value: string } | null>(null);
   const [conditions, setConditions] = useState<Conditions | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
   const accepted = conditions !== null && selectedVersion === conditions.version;
@@ -83,7 +113,10 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   const conditionsChanged = useRef(false);
   const displayedVersion = useRef<string | null>(null);
   const currentAccount = useRef<string | null>(null);
+  const editingProfile = useRef(false);
+  const profileRequestVersion = useRef(0);
   const signingOut = useRef(false);
+  const signOutRedirect = useRef('/');
   const suspendedPage = useRef(false);
 
   // Abort before a changed identity or URL can paint its replacement gate.
@@ -118,7 +151,11 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         sessionStorage.setItem(returnKey, userId);
       }
     }
-    scopedEntry.current = target === 'readiness' ? 'readiness' : 'account';
+    scopedEntry.current = target === 'dashboard' ? 'account' : target;
+    if (hasPendingSignOut(sessionId)) {
+      clearPrivateView('signOutFailed');
+      return () => controller.abort();
+    }
 
     async function resolve() {
       try {
@@ -131,6 +168,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         if (account.status === 'active') {
           if (typeof account.accountId !== 'string' || !account.accountId) throw new Error();
           currentAccount.current = account.accountId;
+          if (target === 'profile' && destination === 'profile') applyProfile(profileAccount(account));
           await openDestination(target, account.accountId, signal);
         } else if (account.status === 'onboardingRequired') {
           await loadConditions(signal);
@@ -146,20 +184,25 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     return () => controller.abort();
     // Requests are scoped to this Clerk session, destination and explicit retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiOrigin, attempt, destination, entry, getToken, userId]);
+  }, [apiOrigin, attempt, destination, entry, clerk, sessionId, userId]);
 
   async function request(path: string, signal: AbortSignal, method = 'GET', body?: object) {
+    if (hasPendingSignOut(sessionId)) throw new GateProblem('authentication_required');
     if (!apiOrigin) throw new Error();
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
     deadline.throwIfAborted();
+    const session = clerk.session;
+    if (session?.id !== sessionId) throw new GateProblem('authentication_required');
     const token = await Promise.race([
-      getToken(),
+      session.getToken(),
       new Promise<never>((_, reject) => {
         deadline.addEventListener('abort', () => reject(deadline.reason), { once: true });
       }),
     ]);
     deadline.throwIfAborted();
-    if (!token) throw new GateProblem('authentication_required');
+    if (!token || clerk.session?.id !== sessionId || hasPendingSignOut(sessionId)) {
+      throw new GateProblem('authentication_required');
+    }
     const response = await fetch(apiOrigin + '/api/v1' + path, {
       method, signal: deadline, cache: 'no-store', redirect: 'error',
       headers: {
@@ -172,6 +215,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     if (response.status === 401) throw new GateProblem('authentication_required');
     const result = await response.json();
     deadline.throwIfAborted();
+    if (clerk.session?.id !== sessionId || hasPendingSignOut(sessionId)) throw new GateProblem('authentication_required');
     if (!response.ok) throw new GateProblem(result.code, result.supportContact);
     return result;
   }
@@ -183,6 +227,8 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     currentAccount.current = null;
     inFlight.current = false;
     setVerified(false);
+    setProfile(null);
+    if (next !== 'unavailable' && next !== 'checking') setProfileDraft(null);
     setConditions(null);
     setSelectedVersion(null);
     setSaving(false);
@@ -206,6 +252,11 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         sessionStorage.removeItem(returnKey);
         clearPrivateView('restricted', error.supportContact);
         notifyPrivateAccess({ type: 'restricted', userId, sessionId, supportContact: error.supportContact });
+        return true;
+      case 'controlled_use_required':
+        setProfileDraft(null);
+        clearPrivateView('checking');
+        window.location.replace(accountPath(scopedEntry.current));
         return true;
       case 'resource_unavailable':
         clearPrivateView('unavailableLink');
@@ -240,6 +291,11 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   }
 
   async function openDestination(target: PrivateDestination, accountId: string, signal: AbortSignal) {
+    if (isSettingsEntry(target)) {
+      if (destination === target) setView(target);
+      else window.location.replace(privatePath(target));
+      return;
+    }
     const method = linkId === undefined && target === 'readiness' ? 'POST' : 'GET';
     const path = linkId !== undefined ? '/account/links/' + encodeURIComponent(linkId)
       : method === 'POST' ? '/account/readiness' : '/account/workspace';
@@ -278,6 +334,46 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     }
   }
 
+  function checkSettingsAccount(account: Record<string, unknown>, owner: string | null) {
+    if (account.accountId !== owner || !owner) throw new GateProblem('authentication_required');
+    if (account.status === 'onboardingRequired') throw new GateProblem('controlled_use_required');
+    if (account.status !== 'active' || account.verified !== true) throw new Error();
+  }
+
+  function applyProfile(account: ProfileAccount) {
+    setProfile(account);
+    setProfileDraft((current) => current?.accountId === account.accountId && current.value === (account.displayName ?? '')
+      ? null : current);
+  }
+
+  async function requestProfile(displayName?: string) {
+    const signal = requestScope.current?.signal;
+    const owner = currentAccount.current;
+    if (!signal || signal.aborted || !owner) throw new Error();
+    const version = ++profileRequestVersion.current;
+    editingProfile.current = true;
+    try {
+      const result = await request('/account', signal, displayName === undefined ? 'GET' : 'PATCH',
+        displayName === undefined ? undefined : { displayName });
+      checkSettingsAccount(result, owner);
+      const refreshed = profileAccount(result);
+      if (version === profileRequestVersion.current) applyProfile(refreshed);
+    } catch (error) {
+      if (!signal.aborted && showAccessProblem(error)) signal.throwIfAborted();
+      throw error;
+    } finally {
+      if (version === profileRequestVersion.current) editingProfile.current = false;
+    }
+  }
+
+  async function recheckSettings(view: View, owner: string | null, signal: AbortSignal) {
+    const version = profileRequestVersion.current;
+    const canRefresh = view === 'profile' && !editingProfile.current;
+    const account = await request('/account', signal);
+    checkSettingsAccount(account, owner);
+    if (canRefresh && version === profileRequestVersion.current) applyProfile(profileAccount(account));
+  }
+
   function retry() {
     clearPrivateView('checking');
     setAttempt((value) => value + 1);
@@ -291,18 +387,34 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
       if (change.sessionId === sessionId) clearPrivateView('restricted', change.supportContact);
       else retry();
     } else if (change.sessionId === sessionId) {
-      if (change.type === 'signedOut') sessionStorage.removeItem(returnKey);
+      if (change.type === 'signedOut') {
+        forgetReadinessReturn();
+        // Preserve a local fence when the initiating tab could not write shared storage.
+        rememberPendingSignOut(sessionId, true);
+      }
       if (view !== 'restricted' && view !== 'verification' || change.type !== 'authorityExpired') {
         clearPrivateView('signIn');
       }
     }
   });
 
-  const resumePage = useEffectEvent(() => {
-    if (document.hidden || !suspendedPage.current || signingOut.current) return;
+  const resumePage = useEffectEvent(async () => {
+    if (document.hidden || !suspendedPage.current) return;
     suspendedPage.current = false;
-    if (view === 'restricted' || view === 'signIn') {
+    if (view === 'restricted' || view === 'signIn' || view === 'signingOut' || view === 'signOutFailed') {
       if (panel.current) panel.current.hidden = false;
+      return;
+    }
+    if (isSettingsEntry(view)) {
+      const controller = new AbortController();
+      requestScope.current = controller;
+      const { signal } = controller;
+      try {
+        await recheckSettings(view, currentAccount.current, signal);
+        if (panel.current) panel.current.hidden = false;
+      } catch (error) {
+        if (!signal.aborted && !showAccessProblem(error)) clearPrivateView('unavailable');
+      }
       return;
     }
     retry();
@@ -318,10 +430,10 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     };
     const onVisibility = () => {
       if (document.hidden) conceal();
-      else resumePage();
+      else void resumePage();
     };
     const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) resumePage();
+      if (event.persisted) void resumePage();
     };
     window.addEventListener('pagehide', conceal);
     window.addEventListener('pageshow', onPageShow);
@@ -338,16 +450,20 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   const recheckDestination = useEffectEvent(async () => {
     const signal = requestScope.current?.signal;
     const accountId = currentAccount.current;
-    if ((view !== 'dashboard' && view !== 'readiness') || !signal || signal.aborted || !accountId) return;
+    if (!signal || signal.aborted || !accountId) return;
     try {
-      await openDestination(view, accountId, signal);
+      if (isSettingsEntry(view)) {
+        await recheckSettings(view, accountId, signal);
+      } else if (view === 'dashboard' || view === 'readiness') {
+        await openDestination(view, accountId, signal);
+      }
     } catch (error) {
       if (!signal.aborted && !showAccessProblem(error)) clearPrivateView('unavailable');
     }
   });
 
   useEffect(() => {
-    if (view !== 'dashboard' && view !== 'readiness') return;
+    if (view !== 'dashboard' && view !== 'readiness' && !isSettingsEntry(view)) return;
     // Bound the lifetime of a visible view while Clerk and resource state can change remotely.
     const timer = window.setInterval(() => void recheckDestination(), destinationRecheckInterval);
     return () => window.clearInterval(timer);
@@ -386,10 +502,22 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   async function exit(redirectUrl: string, preserveReturn = false) {
     if (signingOut.current) return;
     signingOut.current = true;
-    if (!preserveReturn) sessionStorage.removeItem(returnKey);
-    clearPrivateView('signIn');
-    notifyPrivateAccess({ type: 'signedOut', sessionId });
-    await signOut({ redirectUrl }).catch(() => window.location.replace('/'));
+    signOutRedirect.current = redirectUrl;
+    if (!preserveReturn) forgetReadinessReturn();
+    clearPrivateView('signingOut');
+    setPendingSignOut(sessionId, true);
+    try {
+      notifyPrivateAccess({ type: 'signedOut', sessionId });
+    } catch {
+      // Other tabs can still observe the storage marker.
+    }
+    try {
+      await clerk.signOut({ sessionId, redirectUrl });
+      setPendingSignOut(sessionId, false);
+    } catch {
+      signingOut.current = false;
+      setView('signOutFailed');
+    }
   }
 
   const primaryEmail = user?.primaryEmailAddress;
@@ -406,8 +534,55 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
       changeEmail={() => exit(signInPath('account'))} /></div>;
   }
 
+  if (view === 'profile' && profile) {
+    return <div ref={panel} className="driver-private">
+      <SettingsLayout current="profile" heading={heading}>
+        <DriverProfile account={profile} requestProfile={requestProfile} signOut={() => void exit('/')}
+          draftValue={profileDraft?.accountId === profile.accountId ? profileDraft.value : undefined}
+          changeDraft={(value) => setProfileDraft(value === undefined ? null : { accountId: profile.accountId, value })}
+          canManageIdentity={identityManagementEnabled && user?.deleteSelfEnabled === false} />
+      </SettingsLayout>
+    </div>;
+  }
+
+  if (view === 'privacy' || view === 'sessions') {
+    return <div ref={panel} className="driver-private">
+      <SettingsLayout current={view} heading={heading}>
+        <p>{view === 'privacy'
+          ? 'Privacy controls are currently unavailable.'
+          : 'Session history is currently unavailable.'}</p>
+        <Link href={privatePath('profile')} prefetch={false}>Return to Profile</Link>
+      </SettingsLayout>
+    </div>;
+  }
+
+  if ((view === 'checking' || view === 'unavailable') && destination === 'profile') {
+    return <div ref={panel} className="driver-private">
+      <SettingsLayout current="profile" heading={heading}>
+        {view === 'checking' ? <>
+          <p role="status">Loading profile…</p>
+          <div className="profile-placeholders" aria-hidden="true"><span /><span /></div>
+        </> : <>
+          <p role="alert">Couldn’t load profile</p>
+          <button className="entry-action" type="button" onClick={retry}>Retry</button>
+        </>}
+      </SettingsLayout>
+    </div>;
+  }
+
+  if (view === 'signingOut' || view === 'signOutFailed') {
+    return <div ref={panel}>
+      <h1 ref={heading} tabIndex={-1}>{titles[view]}</h1>
+      {view === 'signOutFailed' && <>
+        <p>Your private workspace is locked. Retry to finish signing out.</p>
+        <button className="entry-action" type="button" onClick={() => void exit(signOutRedirect.current)}>Retry sign-out</button>
+      </>}
+    </div>;
+  }
+
   return (
     <div ref={panel}>
+      {view === 'dashboard' && <DriverNavigation current="dashboard" />}
       <p className="entry-status" role="status">{saving ? 'Saving acceptance…' : view === 'checking' ? 'Checking account status…' : verified ? 'Email verified' : ''}</p>
       <h1 ref={heading} tabIndex={-1}>{titles[view]}</h1>
       {view === 'onboarding' && <>

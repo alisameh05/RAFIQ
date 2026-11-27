@@ -3,15 +3,70 @@ export type PrivateAccessChange =
   | { type: 'restricted'; userId: string; sessionId: string; supportContact?: string };
 
 const channelName = 'rafiq-private-access';
+const signingOutPrefix = channelName + ':sign-out:';
+let receiver: BroadcastChannel | undefined;
+let listeners = 0;
+
+export function hasPendingSignOut(sessionId: string) {
+  const key = signingOutPrefix + sessionId;
+  let sharedStorageAvailable = false;
+  try {
+    if (localStorage.getItem(key) !== null) return true;
+    sharedStorageAvailable = true;
+  } catch {
+    // The initiating or notified tab may still have its own marker.
+  }
+  try {
+    return sessionStorage.getItem(key) !== null;
+  } catch {
+    return !sharedStorageAvailable;
+  }
+}
+
+export function rememberPendingSignOut(sessionId: string, pending: boolean) {
+  const key = signingOutPrefix + sessionId;
+  try {
+    if (pending) sessionStorage.setItem(key, '1');
+    else sessionStorage.removeItem(key);
+  } catch {
+    // Private content has already been cleared in this document.
+  }
+}
+
+export function setPendingSignOut(sessionId: string, pending: boolean) {
+  const key = signingOutPrefix + sessionId;
+  try {
+    if (pending) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch {
+    // BroadcastChannel still fences other open tabs.
+  }
+  rememberPendingSignOut(sessionId, pending);
+}
 
 export function notifyPrivateAccess(change: PrivateAccessChange) {
-  const channel = new BroadcastChannel(channelName);
+  const channel = receiver ?? new BroadcastChannel(channelName);
   channel.postMessage(change);
-  channel.close();
+  if (!receiver) channel.close();
 }
 
 export function listenForPrivateAccess(listener: (change: PrivateAccessChange) => void) {
-  const channel = new BroadcastChannel(channelName);
-  channel.onmessage = (event: MessageEvent<PrivateAccessChange>) => listener(event.data);
-  return () => channel.close();
+  const channel = receiver ??= new BroadcastChannel(channelName);
+  listeners++;
+  const receive = (event: MessageEvent<PrivateAccessChange>) => listener(event.data);
+  channel.addEventListener('message', receive);
+  function storageChanged(event: StorageEvent) {
+    if (event.key?.startsWith(signingOutPrefix) && event.newValue === '1') {
+      listener({ type: 'signedOut', sessionId: event.key.slice(signingOutPrefix.length) });
+    }
+  }
+  window.addEventListener('storage', storageChanged);
+  return () => {
+    window.removeEventListener('storage', storageChanged);
+    channel.removeEventListener('message', receive);
+    if (--listeners === 0) {
+      channel.close();
+      receiver = undefined;
+    }
+  };
 }
