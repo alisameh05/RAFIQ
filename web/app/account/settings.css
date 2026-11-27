@@ -1,0 +1,128 @@
+.entry:has(.driver-private:not([hidden])) {
+  --settings-stone: #bbbaa6;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  padding: 1rem 3rem 2rem;
+}
+
+.entry:has(.driver-private:not([hidden])) .entry-main {
+  max-width: 82rem;
+  margin: 1rem auto 2rem;
+}
+
+.driver-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  padding-block: 0.5rem;
+  border-block-end: 1px solid #42463e;
+}
+
+.driver-private .driver-navigation { margin-block-end: 2rem; }
+
+.entry .driver-navigation a,
+.entry .driver-layout nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.entry :is(.driver-navigation, .driver-layout nav) a[aria-current] {
+  color: var(--settings-stone, #bbbaa6);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.35em;
+}
+
+.driver-skip {
+  position: absolute;
+  inset: 0.5rem auto auto 0.5rem;
+  translate: 0 -150%;
+  padding: 0.75rem;
+  background: #171b18;
+}
+
+.driver-skip:focus { translate: none; }
+
+.driver-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 12rem) minmax(0, 42rem);
+  gap: 1.5rem;
+}
+
+.settings-navigation nav,
+.settings-selector nav { display: grid; }
+
+.settings-selector { display: none; }
+
+.settings-content { min-width: 0; }
+.settings-content > h1 { font-size: clamp(2rem, 4vw, 3rem); }
+
+.driver-layout:has(.settings-content:only-child) { grid-template-columns: minmax(0, 42rem); }
+
+.entry .profile-row {
+  margin: 0;
+  padding: 1.5rem 0;
+  border-block-start: 1px solid #42463e;
+}
+
+.profile-row h2,
+.profile-dialog h2 { margin: 0 0 0.5rem; font-size: 1.125rem; }
+
+.entry .profile-row label {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+}
+
+.profile-row input { max-width: 28rem; }
+.profile-email { user-select: text; overflow-wrap: anywhere; }
+
+.profile-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-block-start: 0.75rem;
+}
+
+.profile-status { color: var(--settings-stone); }
+
+.entry .profile-save[aria-disabled=true] {
+  background: #272c27;
+  border-color: #858980;
+  color: var(--settings-stone);
+  cursor: default;
+}
+
+.profile-links { display: grid; gap: 0.25rem; }
+.profile-links a { display: flex; align-items: center; min-height: 2.75rem; width: fit-content; }
+
+.profile-placeholders { display: grid; gap: 1.5rem; margin-block: 1.5rem; max-width: 28rem; }
+.profile-placeholders span { min-height: 3.25rem; border-radius: 0.5rem; background: #212520; }
+.profile-placeholders span + span { width: 70%; }
+
+.profile-clerk { margin-block-start: 1rem; overflow: auto; }
+
+.profile-dialog {
+  box-sizing: border-box;
+  width: min(30rem, calc(100% - 2.5rem));
+  max-height: calc(100% - 2.5rem);
+  padding: 1.5rem;
+  border: 1px solid #858980;
+  border-radius: 0.5rem;
+  background: #171b18;
+  color: var(--ink);
+  overflow: auto;
+}
+
+.profile-dialog::backdrop { background: rgb(0 0 0 / 72%); }
+
+@media (max-width: 48rem) {
+  .entry:has(.driver-private:not([hidden])) { padding-inline: 1.25rem; }
+  .driver-private .driver-navigation { margin-block-end: 1rem; }
+  .driver-layout { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+  .settings-navigation { display: none; }
+  .settings-selector { display: block; border-block-end: 1px solid #42463e; }
+  .settings-selector summary { padding-block: 0.625rem; cursor: pointer; }
+}

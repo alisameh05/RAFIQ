@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -68,6 +68,19 @@ class Account(BaseModel):
     acceptedVersion: str | None
     requiredVersion: str
     supportContact: str | None = None
+
+
+class AccountPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    displayName: str = Field(min_length=1, max_length=100)
+
+    @field_validator("displayName")
+    @classmethod
+    def valid_display_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or re.search(r"[\x00\ud800-\udfff]", value):
+            raise ValueError("Invalid display name")
+        return value
 
 
 class Conditions(BaseModel):
@@ -225,6 +238,14 @@ def account_response(row, email: str, required_version: str, *, published: bool 
     )
 
 
+def require_account_conditions(row, conditions: Conditions | None) -> Conditions:
+    if conditions is None:
+        raise unavailable()
+    if row["accepted_version"] != conditions.version:
+        raise AccountProblem(403, "controlled_use_required", "Accept current controlled-use conditions")
+    return conditions
+
+
 def create_account_app(settings: AccountSettings, engine: Engine, provider: httpx.Client | None = None,
                        *, callback: ClerkCallback | None = None):
     @asynccontextmanager
@@ -238,7 +259,7 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
                 yield
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_methods=["GET", "PUT", "POST"],
+    app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_methods=["GET", "PATCH", "PUT", "POST"],
                        allow_headers=["Authorization", "Content-Type"], expose_headers=["X-Request-Id"])
 
     @app.middleware("http")
@@ -268,13 +289,15 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
         errors = error.errors()
         if any(entry["type"] == "json_invalid" for entry in errors):
             return await account_problem(request, AccountProblem(400, "malformed_request", "Malformed request"))
+        profile = request.method == "PATCH" and request.url.path == "/api/v1/account"
+        allowed_fields = {"displayName"} if profile else {"version", "accepted"}
         fields = {
             ("/" + entry["loc"][1], "required" if entry["type"] == "missing" else "invalid")
             for entry in errors
-            if len(entry["loc"]) > 1 and entry["loc"][0] == "body" and entry["loc"][1] in {"version", "accepted"}
+            if len(entry["loc"]) > 1 and entry["loc"][0] == "body" and entry["loc"][1] in allowed_fields
         }
         return await account_problem(request, AccountProblem(
-            422, "validation_failed", "Check the acceptance fields",
+            422, "validation_failed", "Check the display name" if profile else "Check the acceptance fields",
             field_errors=[{"pointer": pointer, "code": code} for pointer, code in sorted(fields)],
         ))
 
@@ -303,6 +326,20 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
         with account_access(engine, identity, settings) as (_, row, conditions):
             required = conditions.version if conditions else settings.required_version
             return account_response(row, identity.email, required, published=conditions is not None)
+
+    @app.patch("/api/v1/account", operation_id="updateAccount", response_model=Account)
+    def update_account(patch: AccountPatch, request: Request, authorization: Annotated[str | None, Header()] = None):
+        identity = verified_identity(authorization, settings, request.app.state.clerk)
+        with account_access(engine, identity, settings) as (connection, row, conditions):
+            current = require_account_conditions(row, conditions)
+            updated = connection.execute(text("""
+                UPDATE rafiq_fixture.driver_accounts SET display_name = :display_name
+                WHERE clerk_subject = :subject AND NOT restricted
+                RETURNING id, display_name, accepted_version
+            """), {"subject": identity.subject, "display_name": patch.displayName}).mappings().one_or_none()
+            if updated is None:
+                raise restricted(settings)
+            return account_response(updated, identity.email, current.version)
 
     @app.get("/api/v1/account/controlled-use", operation_id="getControlledUse", response_model=Conditions)
     def get_conditions(request: Request, authorization: Annotated[str | None, Header()] = None):
@@ -343,10 +380,7 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
                         link_id: str | None = None) -> DriverEntryContext | WorkspaceLinkContext:
         identity = verified_identity(authorization, settings, request.app.state.clerk)
         with account_access(engine, identity, settings) as (connection, row, conditions):
-            if conditions is None:
-                raise unavailable()
-            if row["accepted_version"] != conditions.version:
-                raise AccountProblem(403, "controlled_use_required", "Accept current controlled-use conditions")
+            conditions = require_account_conditions(row, conditions)
             if link_id is not None:
                 problem = AccountProblem(404, "resource_unavailable", "Resource unavailable")
                 try:

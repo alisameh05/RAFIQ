@@ -3,9 +3,10 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-ACCOUNT_SCHEMA_REVISION = "0006_private_access"
+ACCOUNT_SCHEMA_REVISION = "0007_driver_profile"
 FIXTURE_SCHEMA_REVISIONS = (
-    "0003_validation_callback", "0004_driver_accounts", "0005_controlled_use", ACCOUNT_SCHEMA_REVISION,
+    "0003_validation_callback", "0004_driver_accounts", "0005_controlled_use", "0006_private_access",
+    ACCOUNT_SCHEMA_REVISION,
 )
 
 

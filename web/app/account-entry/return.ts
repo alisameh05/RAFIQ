@@ -1,8 +1,17 @@
-export type PrivateDestination = 'dashboard' | 'readiness';
+export type PrivateDestination = 'dashboard' | 'readiness' | 'profile' | 'sessions' | 'privacy';
 export type EntryContext = 'account' | PrivateDestination | undefined;
 
 export function privateDestination(value: unknown): PrivateDestination | undefined {
-  return value === 'dashboard' || value === 'readiness' ? value : undefined;
+  switch (value) {
+    case 'dashboard':
+    case 'readiness':
+    case 'profile':
+    case 'sessions':
+    case 'privacy':
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 export function entryContext(value: string | string[] | undefined): EntryContext {

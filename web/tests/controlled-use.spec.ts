@@ -25,7 +25,13 @@ async function signInFixture(page: Page, driver: string, session = driver) {
         id: sessionId, status: 'active', getToken: async () => token,
         lastActiveToken: { jwt: { claims: { sub: userId, sid: sessionId, sts: 'active' } } },
       };
-      return { client: { sessions: [session] }, session, user: { id: userId }, organization: null };
+      return {
+        client: { sessions: [session] }, session, organization: null,
+        user: {
+          id: userId, deleteSelfEnabled: false,
+          primaryEmailAddress: { id: 'idn_synthetic', emailAddress: 'verification@example.test' },
+        },
+      };
     };
     let resources = authority(userId, sessionId, token);
     const listeners = new Set<(resources: object) => void>();
@@ -41,7 +47,19 @@ async function signInFixture(page: Page, driver: string, session = driver) {
         queueMicrotask(() => listener(resources));
         return () => listeners.delete(listener);
       },
+      mountUserProfile(node: HTMLElement) {
+        node.textContent = 'Synthetic Clerk identity settings';
+      },
+      unmountUserProfile(node: HTMLElement) {
+        node.textContent = '';
+      },
       async signOut({ redirectUrl }: { redirectUrl: string }) {
+        if (document.documentElement.dataset.fixtureSignOut === 'hold') {
+          await new Promise<void>((resolve) => {
+            window.addEventListener('rafiq-fixture-release-sign-out', () => resolve(), { once: true });
+          });
+          throw new Error('Synthetic Clerk sign-out failure');
+        }
         document.cookie = '__session=; path=/; max-age=0';
         document.cookie = '__client_uat=; path=/; max-age=0';
         window.location.assign(redirectUrl);
@@ -375,3 +393,223 @@ for (const trigger of ['expiry', 'sign-out'] as const) {
     await expect(sibling.getByRole('link', { name: 'Start session' })).toHaveCount(0);
   });
 }
+
+const profilePath = '/account/profile';
+const longEmail = 'driver-' + 'x'.repeat(57) + '@' + 'example'.repeat(8) + '.test';
+const profileFixture = (displayName: string | null, registeredEmail = longEmail) => ({
+  accountId: syntheticAccount, status: 'active', verified: true, displayName, registeredEmail,
+});
+
+test('D19 retries a scoped read and save, validates and persists across reload and fresh sign-in', async ({ page, context }) => {
+  await context.route(api + '**', async (route) => {
+    const req = route.request();
+    if (req.url().endsWith('/workspace')) {
+      return route.fulfill({ json: { destination: 'dashboard', accountId: syntheticAccount, acceptedVersion: 'controlled-use-1' } });
+    }
+    if (req.method() === 'PATCH') {
+      expect(req.postDataJSON()).toEqual({ displayName: 'Nour Fixture' });
+      if (++writes === 1) return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+      displayName = req.postDataJSON().displayName;
+    } else if (++reads === 3) {
+      started();
+      await loading;
+      return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+    }
+    return route.fulfill({ json: profileFixture(displayName) });
+  });
+  let reads = 0;
+  let writes = 0;
+  let displayName: string | null = null;
+  let started!: () => void;
+  const readStarted = new Promise<void>((resolve) => { started = resolve; });
+  let release!: () => void;
+  const loading = new Promise<void>((resolve) => { release = resolve; });
+
+  await signInFixture(page, 'profileA');
+  await page.setViewportSize({ width: 640, height: 820 });
+  await page.goto(origin + '/account/dashboard');
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  // The dashboard takes one account read. The first visit supplies the before-state.
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await expect(page.getByLabel('Display name')).toHaveValue('');
+  await page.reload();
+  await readStarted;
+  await expect(page.getByRole('status')).toHaveText('Loading profile…');
+  await expect(page.getByText(longEmail)).toHaveCount(0);
+  release();
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Couldn’t load profile');
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  const name = page.getByLabel('Display name');
+  await expect(name).toHaveValue('');
+  await expect(page.getByText('Verified', { exact: false })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('profile-before.png'), fullPage: true });
+
+  await name.fill('x'.repeat(101));
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(name).toBeFocused();
+  await expect(name).toHaveAccessibleDescription('Enter a display name from 1 to 100 characters.');
+  expect(writes).toBe(0);
+  await name.fill('Nour Fixture');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Couldn’t save your display name');
+  await expect(name).toHaveValue('Nour Fixture');
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved' })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+  await page.screenshot({ path: test.info().outputPath('profile-after.png'), fullPage: true });
+  await page.reload();
+  await expect(name).toHaveValue('Nour Fixture');
+  await expect(page.getByRole('status').filter({ hasText: 'Saved' })).toHaveCount(0);
+
+  await page.addStyleTag({ content: 'html { zoom: 200% }' });
+  const email = page.getByText(longEmail, { exact: true });
+  await expect(email).toBeVisible();
+  expect(await email.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(60);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(640);
+  await page.screenshot({ path: test.info().outputPath('profile-long-email-200-percent.png'), fullPage: true });
+  await page.setViewportSize({ width: 320, height: 760 });
+  await page.addStyleTag({ content: 'html { zoom: 100% }' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+
+  await expect(page.locator('.profile-links a')).toHaveText(['View session history', 'Privacy']);
+  await page.getByRole('link', { name: 'View session history' }).click();
+  await expect(page.getByRole('heading', { name: 'Sessions' })).toBeFocused();
+  await expect(page.getByText('Session history is currently unavailable.')).toBeVisible();
+  await page.getByRole('link', { name: 'Return to Profile' }).click();
+  await page.locator('.profile-links').getByRole('link', { name: 'Privacy' }).click();
+  await expect(page.getByRole('heading', { name: 'Privacy' })).toBeFocused();
+  await expect(page.getByText('Privacy controls are currently unavailable.')).toBeVisible();
+  await page.getByRole('link', { name: 'Return to Profile' }).click();
+
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  await expect(page).toHaveURL(origin + '/');
+  const fresh = await context.newPage();
+  await signInFixture(fresh, 'profileA', 'profileFresh');
+  await fresh.goto(origin + profilePath);
+  await expect(fresh.getByLabel('Display name')).toHaveValue('Nour Fixture');
+});
+
+test('D19 rechecks authorized identity after returning from Clerk and routes a restriction to P07', async ({ page }) => {
+  await signInFixture(page, 'profileIdentity');
+  let mode: 'active' | 'unavailable' | 'verification' | 'restricted' = 'active';
+  let email = longEmail;
+  await page.route(api, async (route) => {
+    if (mode === 'unavailable') return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+    if (mode === 'restricted') {
+      return route.fulfill({ status: 403, json: { code: 'account_restricted', supportContact: 'support@example.net' } });
+    }
+    if (mode === 'verification') return route.fulfill({ status: 403, json: { code: 'verification_required' } });
+    return route.fulfill({ json: profileFixture('Nour Fixture', email) });
+  });
+  await page.goto(origin + profilePath);
+  const manage = page.getByRole('button', { name: 'Manage sign-in details' });
+  await manage.click();
+  await expect(page.getByText('Synthetic Clerk identity settings')).toBeVisible();
+  const back = page.getByRole('button', { name: 'Return to Profile' });
+  await expect(back).toBeFocused();
+  mode = 'unavailable';
+  await back.click();
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Couldn’t check verification');
+  await expect(page.getByText(longEmail)).toHaveCount(0);
+  mode = 'active';
+  email = 'updated@example.test';
+  await page.getByRole('button', { name: 'Retry verification' }).click();
+  await expect(page.getByText(email, { exact: true })).toBeVisible();
+  await expect(manage).toBeFocused();
+
+  await manage.click();
+  mode = 'restricted';
+  await back.click();
+  await expect(page.getByRole('heading', { name: 'Account restricted' })).toBeFocused();
+  await expect(page.getByText(email)).toHaveCount(0);
+  await expect(page.getByLabel('Display name')).toHaveCount(0);
+
+  mode = 'active';
+  await page.reload();
+  await manage.click();
+  mode = 'verification';
+  await back.click();
+  await expect(page.getByRole('heading', { name: 'Verify your email' })).toBeVisible();
+  await expect(page.getByLabel('Display name')).toHaveCount(0);
+});
+
+test('D19 traps confirmation focus and locks private views through pending, failed and retried sign-out', async ({ page, context }) => {
+  const sibling = await context.newPage();
+  let startSave!: () => void;
+  const saving = new Promise<void>((resolve) => { startSave = resolve; });
+  let releaseSave!: () => void;
+  const delayed = new Promise<void>((resolve) => { releaseSave = resolve; });
+  for (const tab of [page, sibling]) {
+    await signInFixture(tab, 'profileShared');
+    await tab.route(api, async (route) => {
+      if (route.request().method() === 'PATCH') {
+        startSave();
+        await delayed;
+        return route.fulfill({ json: profileFixture('Late private draft') }).catch(() => {});
+      }
+      return route.fulfill({ json: profileFixture('Nour Fixture') });
+    });
+    await tab.goto(origin + profilePath);
+    await expect(tab.getByText(longEmail)).toBeVisible();
+  }
+
+  const name = page.getByLabel('Display name');
+  await name.fill('Local unsaved draft');
+  const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+  await signOut.press('Enter');
+  const dialog = page.getByRole('alertdialog');
+  const keepEditing = dialog.getByRole('button', { name: 'Keep editing' });
+  await expect(keepEditing).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(dialog.getByRole('button', { name: 'Sign out' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(keepEditing).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(dialog.getByRole('button', { name: 'Sign out' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(signOut).toBeFocused();
+  await expect(name).toHaveValue('Local unsaved draft');
+  await signOut.press('Enter');
+  await keepEditing.press('Enter');
+  await expect(signOut).toBeFocused();
+
+  await sibling.getByLabel('Display name').fill('Late private draft');
+  await sibling.getByRole('button', { name: 'Save changes' }).click();
+  await saving;
+  await page.evaluate(() => { document.documentElement.dataset.fixtureSignOut = 'hold'; });
+  await signOut.press('Enter');
+  await dialog.getByRole('button', { name: 'Sign out' }).press('Enter');
+  await expect(page.getByRole('heading', { name: 'Signing out…' })).toBeVisible();
+  await expect(sibling.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible();
+  releaseSave();
+  for (const tab of [page, sibling]) {
+    await expect(tab.getByText(longEmail)).toHaveCount(0);
+    await expect(tab.getByLabel('Display name')).toHaveCount(0);
+    await expect(tab.getByRole('status').filter({ hasText: 'Saved' })).toHaveCount(0);
+  }
+  await page.evaluate(() => { window.dispatchEvent(new Event('rafiq-fixture-release-sign-out')); });
+  await expect(page.getByRole('heading', { name: 'Couldn’t sign out' })).toBeFocused();
+  await sibling.reload();
+  await expect(sibling.getByRole('heading', { name: 'Couldn’t sign out' })).toBeVisible();
+  await expect(sibling.getByText(longEmail)).toHaveCount(0);
+  await page.evaluate(() => { delete document.documentElement.dataset.fixtureSignOut; });
+  await page.getByRole('button', { name: 'Retry sign-out' }).click();
+  await expect(page).toHaveURL(origin + '/');
+  await sibling.reload();
+  await expect(sibling).toHaveURL(origin + '/sign-in?entry=profile');
+});
+
+test('D06 and D22 entries require an eligible current driver', async ({ page, request }) => {
+  for (const destination of ['sessions', 'privacy']) {
+    const response = await request.get(origin + '/account/' + destination, { maxRedirects: 0 });
+    expect(response.headers().location).toBe('/sign-in?entry=' + destination);
+  }
+  await signInFixture(page, 'profileBlocked');
+  await page.route(api, (route) => route.fulfill({ status: 403, json: { code: 'account_restricted' } }));
+  for (const destination of ['sessions', 'privacy']) {
+    await page.goto(origin + '/account/' + destination);
+    await expect(page.getByRole('heading', { name: 'Account restricted' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Return to Profile' })).toHaveCount(0);
+  }
+});

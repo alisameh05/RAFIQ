@@ -222,7 +222,7 @@ paths:
     patch:
       operationId: "updateAccount"
       tags: ["M01"]
-      description: "Update the owned display name. Reject an empty patch and identity, lifecycle, or verification fields."
+      description: "Update the current eligible driver's display name after checking the verified Clerk session and current controlled-use acceptance. Trim surrounding whitespace and reject a blank name or fields outside displayName."
       x-authority: "Verified eligible driver · current owner and action"
       requestBody:
         required: true
@@ -245,6 +245,7 @@ paths:
         "403": {"$ref":"#/components/responses/Http403"}
         "422": {"$ref":"#/components/responses/Http422"}
         "500": {"$ref":"#/components/responses/Http500"}
+        "503": {"$ref":"#/components/responses/Http503"}
     delete:
       operationId: "deleteAccount"
       tags: ["M01"]
@@ -3531,7 +3532,7 @@ components:
     AccountPatch:
       type: "object"
       additionalProperties: false
-      required: []
+      required: ["displayName"]
       properties: {"displayName":{"type":"string","minLength":1,"maxLength":100}}
     AccountDeletion:
       type: "object"
