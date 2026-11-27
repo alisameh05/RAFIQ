@@ -3,10 +3,10 @@
 import { useAuth, useClerk, useUser } from '@clerk/nextjs';
 import Link from 'next/link';
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
-import { accountPath, privateDestination, privatePath, signInPath, type EntryContext, type PrivateDestination } from '../account-entry/return';
+import { accountPath, privateDestination, privatePath, privateTitles, signInPath, type EntryContext, type PrivateDestination } from '../account-entry/return';
 import { RestrictedAccountMessage } from '../account-entry/restricted-account';
 import { VerifyEmail } from '../account-entry/verify-email';
-import { hasPendingSignOut, listenForPrivateAccess, notifyPrivateAccess, setPendingSignOut } from './private-access';
+import { hasPendingSignOut, listenForPrivateAccess, notifyPrivateAccess, rememberPendingSignOut, setPendingSignOut } from './private-access';
 import { DriverProfile, type ProfileAccount } from './driver-profile';
 import { DriverNavigation, SettingsLayout } from './settings-layout';
 
@@ -33,21 +33,26 @@ function isSettingsEntry(view: View) {
 }
 
 function profileAccount(result: Record<string, unknown>): ProfileAccount {
-  if (typeof result.registeredEmail !== 'string' || !result.registeredEmail
+  if (typeof result.accountId !== 'string'
+      || typeof result.registeredEmail !== 'string' || !result.registeredEmail
       || (result.displayName !== null && typeof result.displayName !== 'string')) throw new Error();
-  return { displayName: result.displayName, registeredEmail: result.registeredEmail };
+  return { accountId: result.accountId, displayName: result.displayName, registeredEmail: result.registeredEmail };
 }
 const returnKey = 'rafiq-readiness-return-driver';
 const destinationRecheckInterval = 10_000;
 
+function forgetReadinessReturn() {
+  try {
+    sessionStorage.removeItem(returnKey);
+  } catch {
+    // Restricted storage has no return context available to clear.
+  }
+}
+
 const titles: Record<View, string> = {
+  ...privateTitles,
   checking: 'Checking account status',
   onboarding: 'Controlled-use onboarding',
-  dashboard: 'Dashboard',
-  readiness: 'Stationary readiness',
-  profile: 'Profile',
-  sessions: 'Sessions',
-  privacy: 'Privacy',
   restricted: 'Account restricted',
   verification: 'Verify your email',
   signIn: 'Sign in to continue',
@@ -91,6 +96,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   const [view, setView] = useState<View>('checking');
   const [verified, setVerified] = useState(false);
   const [profile, setProfile] = useState<ProfileAccount | null>(null);
+  const [profileDraft, setProfileDraft] = useState<{ accountId: string; value: string } | null>(null);
   const [conditions, setConditions] = useState<Conditions | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
   const accepted = conditions !== null && selectedVersion === conditions.version;
@@ -107,6 +113,8 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   const conditionsChanged = useRef(false);
   const displayedVersion = useRef<string | null>(null);
   const currentAccount = useRef<string | null>(null);
+  const editingProfile = useRef(false);
+  const profileRequestVersion = useRef(0);
   const signingOut = useRef(false);
   const signOutRedirect = useRef('/');
   const suspendedPage = useRef(false);
@@ -220,6 +228,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     inFlight.current = false;
     setVerified(false);
     setProfile(null);
+    if (next !== 'unavailable' && next !== 'checking') setProfileDraft(null);
     setConditions(null);
     setSelectedVersion(null);
     setSaving(false);
@@ -245,6 +254,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         notifyPrivateAccess({ type: 'restricted', userId, sessionId, supportContact: error.supportContact });
         return true;
       case 'controlled_use_required':
+        setProfileDraft(null);
         clearPrivateView('checking');
         window.location.replace(accountPath(scopedEntry.current));
         return true;
@@ -334,15 +344,28 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     const signal = requestScope.current?.signal;
     const owner = currentAccount.current;
     if (!signal || signal.aborted || !owner) throw new Error();
+    const version = ++profileRequestVersion.current;
+    editingProfile.current = true;
     try {
       const result = await request('/account', signal, displayName === undefined ? 'GET' : 'PATCH',
         displayName === undefined ? undefined : { displayName });
       checkSettingsAccount(result, owner);
-      return profileAccount(result);
+      const refreshed = profileAccount(result);
+      if (version === profileRequestVersion.current) setProfile(refreshed);
     } catch (error) {
       if (!signal.aborted && showAccessProblem(error)) signal.throwIfAborted();
       throw error;
+    } finally {
+      if (version === profileRequestVersion.current) editingProfile.current = false;
     }
+  }
+
+  async function recheckSettings(view: View, owner: string | null, signal: AbortSignal) {
+    const version = profileRequestVersion.current;
+    const canRefresh = view === 'profile' && !editingProfile.current;
+    const account = await request('/account', signal);
+    checkSettingsAccount(account, owner);
+    if (canRefresh && version === profileRequestVersion.current) setProfile(profileAccount(account));
   }
 
   function retry() {
@@ -358,7 +381,11 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
       if (change.sessionId === sessionId) clearPrivateView('restricted', change.supportContact);
       else retry();
     } else if (change.sessionId === sessionId) {
-      if (change.type === 'signedOut') sessionStorage.removeItem(returnKey);
+      if (change.type === 'signedOut') {
+        forgetReadinessReturn();
+        // Preserve a local fence when the initiating tab could not write shared storage.
+        rememberPendingSignOut(sessionId, true);
+      }
       if (view !== 'restricted' && view !== 'verification' || change.type !== 'authorityExpired') {
         clearPrivateView('signIn');
       }
@@ -377,8 +404,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
       requestScope.current = controller;
       const { signal } = controller;
       try {
-        const account = await request('/account', signal);
-        checkSettingsAccount(account, currentAccount.current);
+        await recheckSettings(view, currentAccount.current, signal);
         if (panel.current) panel.current.hidden = false;
       } catch (error) {
         if (!signal.aborted && !showAccessProblem(error)) clearPrivateView('unavailable');
@@ -421,8 +447,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     if (!signal || signal.aborted || !accountId) return;
     try {
       if (isSettingsEntry(view)) {
-        const account = await request('/account', signal);
-        checkSettingsAccount(account, accountId);
+        await recheckSettings(view, accountId, signal);
       } else if (view === 'dashboard' || view === 'readiness') {
         await openDestination(view, accountId, signal);
       }
@@ -472,12 +497,16 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     if (signingOut.current) return;
     signingOut.current = true;
     signOutRedirect.current = redirectUrl;
-    if (!preserveReturn) sessionStorage.removeItem(returnKey);
+    if (!preserveReturn) forgetReadinessReturn();
     clearPrivateView('signingOut');
     setPendingSignOut(sessionId, true);
-    notifyPrivateAccess({ type: 'signedOut', sessionId });
     try {
-      await clerk.signOut({ redirectUrl });
+      notifyPrivateAccess({ type: 'signedOut', sessionId });
+    } catch {
+      // Other tabs can still observe the storage marker.
+    }
+    try {
+      await clerk.signOut({ sessionId, redirectUrl });
       setPendingSignOut(sessionId, false);
     } catch {
       signingOut.current = false;
@@ -503,6 +532,8 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     return <div ref={panel} className="driver-private">
       <SettingsLayout current="profile" heading={heading}>
         <DriverProfile account={profile} requestProfile={requestProfile} signOut={() => void exit('/')}
+          draftValue={profileDraft?.accountId === profile.accountId ? profileDraft.value : undefined}
+          changeDraft={(value) => setProfileDraft(value === undefined ? null : { accountId: profile.accountId, value })}
           canManageIdentity={identityManagementEnabled && user?.deleteSelfEnabled === false} />
       </SettingsLayout>
     </div>;

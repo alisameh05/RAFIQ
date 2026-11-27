@@ -1,11 +1,16 @@
 import { notFound } from 'next/navigation';
 import { connection } from 'next/server';
-import { privateDestination } from '../../account-entry/return';
+import { privateDestination, privateTitles } from '../../account-entry/return';
 import { AccountEntry } from '../account-entry';
 
-export const metadata = { title: 'Private workspace | RAFIQ' };
+type DestinationPage = { params: Promise<{ destination: string }> };
 
-export default async function PrivatePage({ params }: { params: Promise<{ destination: string }> }) {
+export async function generateMetadata({ params }: DestinationPage) {
+  const destination = privateDestination((await params).destination);
+  return { title: (destination ? privateTitles[destination] : 'Private workspace') + ' | RAFIQ' };
+}
+
+export default async function PrivatePage({ params }: DestinationPage) {
   await connection();
   const destination = privateDestination((await params).destination);
   if (!destination) notFound();

@@ -8,13 +8,40 @@ let receiver: BroadcastChannel | undefined;
 let listeners = 0;
 
 export function hasPendingSignOut(sessionId: string) {
-  return localStorage.getItem(signingOutPrefix + sessionId) !== null;
+  const key = signingOutPrefix + sessionId;
+  let sharedStorageAvailable = false;
+  try {
+    if (localStorage.getItem(key) !== null) return true;
+    sharedStorageAvailable = true;
+  } catch {
+    // The initiating or notified tab may still have its own marker.
+  }
+  try {
+    return sessionStorage.getItem(key) !== null;
+  } catch {
+    return !sharedStorageAvailable;
+  }
+}
+
+export function rememberPendingSignOut(sessionId: string, pending: boolean) {
+  const key = signingOutPrefix + sessionId;
+  try {
+    if (pending) sessionStorage.setItem(key, '1');
+    else sessionStorage.removeItem(key);
+  } catch {
+    // Private content has already been cleared in this document.
+  }
 }
 
 export function setPendingSignOut(sessionId: string, pending: boolean) {
   const key = signingOutPrefix + sessionId;
-  if (pending) localStorage.setItem(key, '1');
-  else localStorage.removeItem(key);
+  try {
+    if (pending) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch {
+    // BroadcastChannel still fences other open tabs.
+  }
+  rememberPendingSignOut(sessionId, pending);
 }
 
 export function notifyPrivateAccess(change: PrivateAccessChange) {

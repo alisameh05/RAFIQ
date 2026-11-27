@@ -5,19 +5,20 @@ import Link from 'next/link';
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { privatePath } from '../account-entry/return';
 
-export type ProfileAccount = { displayName: string | null; registeredEmail: string };
+export type ProfileAccount = { accountId: string; displayName: string | null; registeredEmail: string };
 
 type IdentityState = 'ready' | 'manage' | 'checking' | 'failed';
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed';
 
-export function DriverProfile({ account, requestProfile, canManageIdentity, signOut }: {
+export function DriverProfile({ account, draftValue, changeDraft, requestProfile, canManageIdentity, signOut }: {
   account: ProfileAccount;
-  requestProfile: (displayName?: string) => Promise<ProfileAccount>;
+  draftValue: string | undefined;
+  changeDraft: (value?: string) => void;
+  requestProfile: (displayName?: string) => Promise<void>;
   canManageIdentity: boolean;
   signOut: () => void;
 }) {
-  const [confirmed, setConfirmed] = useState(account);
-  const [draft, setDraft] = useState(account.displayName ?? '');
+  const draft = draftValue ?? account.displayName ?? '';
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [identity, setIdentity] = useState<IdentityState>('ready');
   const [fieldError, setFieldError] = useState(false);
@@ -30,7 +31,7 @@ export function DriverProfile({ account, requestProfile, canManageIdentity, sign
   const manageTrigger = useRef<HTMLButtonElement>(null);
   const returnFromIdentity = useRef<HTMLButtonElement>(null);
   const returningToProfile = useRef(false);
-  const dirty = draft !== (confirmed.displayName ?? '');
+  const dirty = draft !== (account.displayName ?? '');
   const saving = saveState === 'saving';
 
   useLayoutEffect(() => {
@@ -58,9 +59,8 @@ export function DriverProfile({ account, requestProfile, canManageIdentity, sign
     setFieldError(false);
     setSaveState('saving');
     try {
-      const saved = await requestProfile(displayName);
-      setConfirmed(saved);
-      setDraft(saved.displayName ?? '');
+      await requestProfile(displayName);
+      changeDraft();
       setSaveState('saved');
     } catch (error) {
       if (error instanceof Error && error.message === 'validation_failed') {
@@ -79,9 +79,8 @@ export function DriverProfile({ account, requestProfile, canManageIdentity, sign
     }
     setIdentity('checking');
     try {
-      const refreshed = await requestProfile();
-      setConfirmed(refreshed);
-      if (!dirty) setDraft(refreshed.displayName ?? '');
+      await requestProfile();
+      if (!dirty) changeDraft();
       setIdentity('ready');
     } catch {
       setIdentity('failed');
@@ -112,7 +111,7 @@ export function DriverProfile({ account, requestProfile, canManageIdentity, sign
         <input id="display-name" ref={name} value={draft} readOnly={saving} autoComplete="nickname"
           aria-invalid={fieldError || undefined} aria-describedby="display-name-guidance"
           onChange={(event) => {
-            setDraft(event.target.value);
+            changeDraft(event.target.value);
             setFieldError(false);
             setSaveState('idle');
           }} />
@@ -139,7 +138,7 @@ export function DriverProfile({ account, requestProfile, canManageIdentity, sign
       </form>
       <section className="profile-row" aria-labelledby="registered-email">
         <h2 id="registered-email">Registered email</h2>
-        {identity === 'ready' && <p className="profile-email">{confirmed.registeredEmail}</p>}
+        {identity === 'ready' && <p className="profile-email">{account.registeredEmail}</p>}
         <p className="profile-status" role="status">
           {identity === 'ready' && <><span aria-hidden="true">✓ </span>Verified</>}
           {identity === 'checking' && 'Checking verification…'}
@@ -175,7 +174,7 @@ export function DriverProfile({ account, requestProfile, canManageIdentity, sign
           }
         }}>
         <h2 id="sign-out-title">Sign out without saving?</h2>
-        <p id="sign-out-description">Your display name changes will be discarded.</p>
+        <p id="sign-out-description">Any unsaved display name changes will be discarded.</p>
         <div className="profile-actions">
           <button className="entry-action" type="button" ref={keepEditing} onClick={() => dialog.current?.close()}>
             Keep editing

@@ -23,7 +23,7 @@ from fixture.account_lifecycle import (
     SUBJECT, ClerkCallback, LifecycleUnavailable, identity_lifecycle, lock_identity, valid_revision,
 )
 from fixture.callback import InvalidCallback
-from fixture.database import ACCOUNT_SCHEMA_REVISION, engine_for, schema_ready, schema_revision
+from fixture.database import ACCOUNT_SCHEMA_REVISIONS, PROFILE_SCHEMA_REVISION, engine_for, schema_ready, schema_revision
 from fixture.identity import https_origin, session_claims, verification_key
 
 SESSION = re.compile(r"sess_[A-Za-z0-9]{1,128}")
@@ -187,11 +187,12 @@ def verified_identity(authorization: str | None, settings: AccountSettings,
 
 
 @contextmanager
-def account_access(engine: Engine, identity: DriverIdentity, settings: AccountSettings):
+def account_access(engine: Engine, identity: DriverIdentity, settings: AccountSettings, *, profile_update=False):
     subject = identity.subject
     try:
         with engine.begin() as connection:
-            if schema_revision(connection, "api") != ACCOUNT_SCHEMA_REVISION:
+            supported = (PROFILE_SCHEMA_REVISION,) if profile_update else ACCOUNT_SCHEMA_REVISIONS
+            if schema_revision(connection, "api") not in supported:
                 raise unavailable()
             connection.execute(
                 text("SELECT set_config('rafiq.driver_subject', :subject, true)"), {"subject": subject}
@@ -330,7 +331,7 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     @app.patch("/api/v1/account", operation_id="updateAccount", response_model=Account)
     def update_account(patch: AccountPatch, request: Request, authorization: Annotated[str | None, Header()] = None):
         identity = verified_identity(authorization, settings, request.app.state.clerk)
-        with account_access(engine, identity, settings) as (connection, row, conditions):
+        with account_access(engine, identity, settings, profile_update=True) as (connection, row, conditions):
             current = require_account_conditions(row, conditions)
             updated = connection.execute(text("""
                 UPDATE rafiq_fixture.driver_accounts SET display_name = :display_name

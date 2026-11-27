@@ -441,6 +441,7 @@ test('D19 retries a scoped read and save, validates and persists across reload a
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   const name = page.getByLabel('Display name');
   await expect(name).toHaveValue('');
+  await expect(page).toHaveTitle('Profile | RAFIQ');
   await expect(page.getByText('Verified', { exact: false })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath('profile-before.png'), fullPage: true });
 
@@ -488,6 +489,34 @@ test('D19 retries a scoped read and save, validates and persists across reload a
   await signInFixture(fresh, 'profileA', 'profileFresh');
   await fresh.goto(origin + profilePath);
   await expect(fresh.getByLabel('Display name')).toHaveValue('Nour Fixture');
+});
+
+test('D19 retains a draft through a service outage and refreshes verified identity independently', async ({ page }) => {
+  await signInFixture(page, 'profileOutage');
+  await page.clock.install();
+  let unavailable = false;
+  let email = longEmail;
+  await page.route(api, (route) => {
+    if (unavailable) return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+    return route.fulfill({ json: profileFixture('Saved value', email) });
+  });
+  await page.goto(origin + profilePath);
+  const name = page.getByLabel('Display name');
+  await name.fill('Draft through outage');
+  unavailable = true;
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Couldn’t save your display name');
+  await page.clock.runFor(10_100);
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Couldn’t load profile');
+  await expect(name).toHaveCount(0);
+
+  unavailable = false;
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(name).toHaveValue('Draft through outage');
+  email = 'changed-in-another-session@example.test';
+  await page.clock.runFor(10_100);
+  await expect(page.getByText(email, { exact: true })).toBeVisible();
+  await expect(name).toHaveValue('Draft through outage');
 });
 
 test('D19 rechecks authorized identity after returning from Clerk and routes a restriction to P07', async ({ page }) => {
@@ -577,7 +606,14 @@ test('D19 traps confirmation focus and locks private views through pending, fail
   await sibling.getByLabel('Display name').fill('Late private draft');
   await sibling.getByRole('button', { name: 'Save changes' }).click();
   await saving;
-  await page.evaluate(() => { document.documentElement.dataset.fixtureSignOut = 'hold'; });
+  await page.evaluate(() => {
+    document.documentElement.dataset.fixtureSignOut = 'hold';
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (this === localStorage) throw new DOMException('Synthetic storage quota failure', 'QuotaExceededError');
+      return setItem.call(this, key, value);
+    };
+  });
   await signOut.press('Enter');
   await dialog.getByRole('button', { name: 'Sign out' }).press('Enter');
   await expect(page.getByRole('heading', { name: 'Signing out…' })).toBeVisible();

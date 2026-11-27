@@ -1,10 +1,9 @@
 import Link from 'next/link';
 import type { ReactNode, Ref } from 'react';
-import { privatePath } from '../account-entry/return';
+import { privatePath, privateTitles } from '../account-entry/return';
 import './settings.css';
 
 type Section = 'profile' | 'privacy' | 'sessions';
-const titles: Record<Section, string> = { profile: 'Profile', privacy: 'Privacy', sessions: 'Sessions' };
 
 export function DriverNavigation({ current }: { current: 'dashboard' | 'sessions' | 'settings' }) {
   return <nav className="driver-navigation" aria-label="Driver workspace">
@@ -38,12 +37,12 @@ export function SettingsLayout({ current, heading, children }: {
       {current !== 'sessions' && <>
         <div className="settings-navigation"><SettingsLinks current={current} /></div>
         <details className="settings-selector">
-          <summary>Settings · {titles[current]}</summary>
+          <summary>Settings · {privateTitles[current]}</summary>
           <SettingsLinks current={current} />
         </details>
       </>}
       <div className="settings-content">
-        <h1 id="driver-content" ref={heading} tabIndex={-1}>{titles[current]}</h1>
+        <h1 id="driver-content" ref={heading} tabIndex={-1}>{privateTitles[current]}</h1>
         {children}
       </div>
     </div>
