@@ -17,6 +17,7 @@ test('the public landing explains eligibility and preserves sign-in while signup
   await expect(ending).toContainText('Public signup is pending release.');
   await expect(ending.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in');
   await expect(page.getByRole('link', { name: /create account|join rafiq/i })).toHaveCount(0);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.screenshot({ path: testInfo.outputPath('pending-desktop.png'), fullPage: true });
   await page.goto(new URL('/sign-up', pending).href);
   await expect(page).toHaveURL(new URL('/', pending).href);
@@ -26,6 +27,7 @@ test('the public landing explains eligibility and preserves sign-in while signup
 test('both join actions navigate to the real signup form', async ({ page }, testInfo) => {
   test.skip(!enabled, 'Set RAFIQ_LANDING_ENABLED_ORIGIN to an isolated Clerk development app with signup enabled.');
   await page.goto(enabled!);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.screenshot({ path: testInfo.outputPath('enabled-desktop.png'), fullPage: true });
   for (const name of ['Create account', 'Join RAFIQ']) {
     const join = page.getByRole('link', { name, exact: true });
@@ -33,6 +35,9 @@ test('both join actions navigate to the real signup form', async ({ page }, test
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(new URL('/sign-up', enabled).href);
     await expect(page.getByRole('heading', { name: 'Create an account' })).toBeVisible();
+    await expect(page.getByLabel('Email address', { exact: true })).toBeEditable();
+    await expect(page.getByLabel('Password', { exact: true })).toBeEditable();
+    await expect(page.getByRole('button', { name: 'Create account', exact: true })).toBeEnabled();
     await page.goto(enabled!);
   }
   await page.getByRole('banner').getByRole('link', { name: 'Sign in' }).click();
@@ -67,7 +72,7 @@ test('sample evidence supports keyboard and pointer review with exact source fac
   await second.focus();
   await page.keyboard.press('Enter');
   await expect(second).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('status').filter({ hasText: 'Session 2' })).toHaveText('Session 2 recorded two eye-closure warnings.');
+  await expect(page.getByRole('status').filter({ hasText: 'Session 2' })).toHaveText('Session 2 recorded 2 eye-closure warnings.');
 
   const trigger = page.getByRole('button', { name: 'Open sample report' });
   await trigger.focus();
@@ -118,8 +123,16 @@ test('graphics failure and reduced motion preserve the still, facts and controls
   });
   // Exercise the actual turntable request with WebGL disabled.
   await page.route('**/landing/turntable/*.webp', (route) => route.abort());
-  await page.goto(pending!);
   const failedAsset = page.waitForEvent('requestfailed', (request) => request.url().includes('/landing/turntable/'));
+  await page.goto(pending!);
+  const photo = page.getByRole('img', { name: /staged driver.*parked vehicle/i });
+  const scene = page.locator('figure').filter({ has: photo });
+  const obstruction = scene.locator('.landing-scene-obstructed');
+  await scene.evaluate((node) => window.scrollBy(0, node.getBoundingClientRect().top - window.innerHeight / 2));
+  await expect(obstruction).toHaveCSS('opacity', '0');
+  await scene.evaluate((node) => window.scrollBy(0, node.getBoundingClientRect().top + node.clientHeight * 0.55));
+  await expect(obstruction).toHaveCSS('opacity', '1');
+
   await page.getByRole('heading', { name: 'RAFIQ Agent' }).scrollIntoViewIfNeeded();
   await failedAsset;
   await expect(page.getByRole('img', { name: /Miibot, the graphite RAFIQ companion/ })).toHaveCSS('opacity', '1');
@@ -133,6 +146,7 @@ test('graphics failure and reduced motion preserve the still, facts and controls
   await expect(still).toHaveCSS('opacity', '0');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await expect(still).toHaveCSS('opacity', '1');
+  await expect(obstruction).toBeHidden();
   await page.getByRole('button', { name: 'Pause' }).click();
   await expect(page.getByRole('status').filter({ hasText: '00:16' })).toContainText('Monitoring paused');
   await expect(page.getByRole('region', { name: /your drive.*your story/i }).getByRole('link', { name: 'Sign in' })).toBeVisible();
@@ -146,6 +160,9 @@ test.describe('static HTML', () => {
     await page.setViewportSize({ width: 320, height: 720 });
     await page.goto(pending!);
     await expect(page.getByText('The camera view became obstructed at 00:16.')).toBeVisible();
+    await expect(page.getByText('00:16 · Monitoring paused', { exact: true })).toBeVisible();
+    await expect(page.getByText('Session 2 · 2', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /warning|pause|session 2/i })).toHaveCount(0);
     await page.getByText('Open sample report', { exact: true }).filter({ visible: true }).click();
     await page.getByText('Two of three sessions included a warning', { exact: true }).filter({ visible: true }).click();
     await expect(page.getByText(/0 in session 1, 2 in session 2, and 1 in the parked session/).filter({ visible: true })).toBeVisible();

@@ -114,7 +114,7 @@
   object-fit: cover;
   object-position: center 46%;
 }
-.landing-scene figcaption {
+.landing-scene figcaption, .landing-scene-note {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -125,6 +125,7 @@
   background: #0e1718ed;
 }
 .landing-scene strong { color: var(--land-cyan); font-size: clamp(1rem, 2vw, 1.65rem); font-weight: 500; }
+.landing-scene-obstructed { display: none; }
 .landing-symbol {
   display: inline-grid;
   place-items: center;
@@ -246,6 +247,8 @@
 .landing-bar { display: block; border-bottom: 1px solid var(--land-line); }
 .landing-bar span { display: block; height: 4px; background: var(--land-cyan); }
 .landing-evidence .landing-report-open { margin-block-start: 1rem; }
+.landing-static-events { padding-inline-start: 1.2rem; margin-block-start: 0.6rem; }
+.landing-static-events li + li { margin-block-start: 0.45rem; }
 
 .landing-report {
   width: min(38rem, calc(100% - 2rem));
@@ -266,6 +269,42 @@
 .landing-ending h2 { font-size: clamp(3rem, 8.5vw, 9rem); }
 .landing-ending > p { margin-block: 1.35rem; font-size: clamp(1.12rem, 2vw, 1.55rem); }
 .landing-footer { padding-block: 1.5rem; border-top: 1px solid var(--land-line); font-size: 0.85rem; }
+
+@keyframes landing-sample-reveal {
+  from { clip-path: circle(16% at 73% 46%); }
+  to { clip-path: circle(100% at 73% 46%); }
+}
+
+@keyframes landing-sample-obstructed {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (min-width: 56rem) and (min-height: 35rem) and (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .landing-scene { view-timeline-name: --parked-scene; }
+    .landing-scene-photo {
+      animation: landing-sample-reveal linear both;
+      animation-timeline: --parked-scene;
+      animation-range: entry 0% entry 90%;
+    }
+    .landing-scene-obstructed {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      justify-content: flex-end;
+      align-items: flex-start;
+      padding: inherit;
+      isolation: isolate;
+      pointer-events: none;
+      animation: landing-sample-obstructed linear both;
+      animation-timeline: --parked-scene;
+      animation-range: exit 0% exit 45%;
+    }
+    .landing-scene-note { border-color: var(--land-muted); }
+    .landing-scene-note strong { color: var(--land-paper); }
+  }
+}
 
 @media (max-width: 55.99rem) {
   .landing-agent-grid, .landing-chapters { display: block; }

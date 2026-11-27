@@ -1,6 +1,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { SampleEvidence } from './sample-evidence';
+import { sampleEvents } from './sample-data';
 import './landing.css';
 
 function EntryActions({ open, ending = false }: { open: boolean; ending?: boolean }) {
@@ -20,6 +21,8 @@ function EntryActions({ open, ending = false }: { open: boolean; ending?: boolea
 }
 
 export function Landing({ signupOpen }: { signupOpen: boolean }) {
+  const [warning, pause] = sampleEvents;
+
   return (
     <div className="landing" id="top">
       <a className="landing-skip" href="#sample">Skip to sample session</a>
@@ -53,16 +56,24 @@ export function Landing({ signupOpen }: { signupOpen: boolean }) {
           <p className="landing-label">Sample session · Synthetic data</p>
           <h2 id="sample-title">Parked vehicle</h2>
           <figure className="landing-scene">
-            <Image src="/landing/generated.png" alt="Staged driver with eyes closed in a parked vehicle"
+            <Image className="landing-scene-photo" src="/landing/generated.png"
+              alt="Staged driver with eyes closed in a parked vehicle"
               width={1584} height={672} unoptimized />
             <figcaption>
               <span className="landing-symbol" aria-hidden="true">!</span>
-              <span><strong>Drowsiness observed</strong><br />Sustained eye closure · 2 s</span>
+              <span><strong>{warning.title}</strong><br />Sustained eye closure · {warning.durationSeconds} s</span>
             </figcaption>
+            <div className="landing-scene-obstructed" aria-hidden="true">
+              <Image src="/landing/camera-obstructed.webp" alt="" width={1000} height={424} unoptimized />
+              <div className="landing-scene-note">
+                <span className="landing-symbol">Ⅱ</span>
+                <span><strong>{pause.title}</strong><br />{pause.reason}.</span>
+              </div>
+            </div>
           </figure>
           <ul className="landing-facts">
-            <li><span className="landing-symbol" aria-hidden="true">!</span><div><h3>Warning</h3><p>Eyes closed for 2 seconds at 00:08.</p></div></li>
-            <li><span className="landing-symbol" aria-hidden="true">Ⅱ</span><div><h3>Monitoring paused</h3><p>The camera view became obstructed at 00:16.</p></div></li>
+            <li><span className="landing-symbol" aria-hidden="true">!</span><div><h3>Warning</h3><p>Eyes closed for {warning.durationSeconds} seconds at {warning.time}.</p></div></li>
+            <li><span className="landing-symbol" aria-hidden="true">Ⅱ</span><div><h3>{pause.title}</h3><p>{pause.reason} at {pause.time}.</p></div></li>
             <li><span className="landing-symbol" aria-hidden="true">≡</span><div><h3>Private review</h3><a href="#session-review">Inspect the sample timeline</a></div></li>
           </ul>
         </section>
