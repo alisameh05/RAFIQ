@@ -10,11 +10,11 @@ function EntryActions({ open, ending = false }: { open: boolean; ending?: boolea
       {!open && <p className="landing-pending">Public signup is pending release.</p>}
       <div className="landing-actions">
         {open && (
-          <Link className="landing-button landing-primary" href="/sign-up">
+          <Link className="landing-button landing-primary" href="/sign-up" prefetch={false}>
             {ending ? 'Join RAFIQ' : 'Create account'} <span aria-hidden="true">→</span>
           </Link>
         )}
-        <Link className="landing-button" href="/sign-in">Sign in</Link>
+        <Link className="landing-button" href="/sign-in" prefetch={false}>Sign in</Link>
       </div>
     </div>
   );
