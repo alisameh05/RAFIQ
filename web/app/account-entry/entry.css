@@ -13,6 +13,12 @@
 .entry *, .entry *::before, .entry *::after { box-sizing: border-box; }
 .entry a { color: var(--cyan); text-underline-offset: 0.2em; }
 .entry :focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; }
+.entry-conditions section h2 { margin: 1rem 0 0.25rem; font-size: 1rem; }
+.entry-conditions section p { margin: 0; }
+.entry .entry-consent { display: flex; align-items: start; gap: 0.65rem; margin: 1.25rem 0; }
+.entry-consent input { appearance: auto; width: 1.125rem; height: 1.125rem; flex: none; accent-color: var(--cyan); }
+.entry .entry-notice:empty { margin: 0; }
+
 .entry-header { margin: 0 auto; max-width: 82rem; }
 .entry-header .entry-wordmark { color: var(--ink); font-weight: 800; font-size: 1.5rem; text-decoration: none; }
 .entry .entry-main { width: 100%; max-width: 35rem; margin: clamp(2rem, 8vw, 7rem) auto 2rem; }
@@ -25,7 +31,7 @@
 .entry form { margin: 1.5rem 0; }
 .entry fieldset { padding: 0; margin: 0; border: 0; min-inline-size: 0; }
 .entry label { margin: 1rem 0 0.4rem; font-weight: 600; }
-.entry input:not([type=hidden]) {
+.entry input:not([type=hidden], [type=checkbox]) {
   min-height: 3rem;
   width: 100%;
   border: 1px solid var(--stroke);

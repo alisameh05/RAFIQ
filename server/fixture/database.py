@@ -3,8 +3,9 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-ACCOUNT_SCHEMA_REVISION = "0004_driver_accounts"
-FIXTURE_SCHEMA_REVISIONS = ("0003_validation_callback", ACCOUNT_SCHEMA_REVISION)
+ACCOUNT_SCHEMA_REVISION = "0005_controlled_use"
+ACCOUNT_SCHEMA_REVISIONS = ("0004_driver_accounts", ACCOUNT_SCHEMA_REVISION)
+FIXTURE_SCHEMA_REVISIONS = ("0003_validation_callback", *ACCOUNT_SCHEMA_REVISIONS)
 
 
 def database_role(mode: str | None, role: str) -> str:
@@ -48,13 +49,15 @@ def engine_for(role: str):
     )
 
 
-def schema_ready(connection, role: str, *, account_entry: bool = False) -> bool:
-    version = connection.execute(
+def schema_revision(connection, role: str) -> str | None:
+    return connection.execute(
         text("""
             SELECT version_num FROM rafiq_fixture.alembic_version WHERE current_user = :role
         """),
         {"role": database_role(os.environ.get("RAFIQ_MODE"), role)},
     ).scalar_one_or_none()
-    if account_entry:
-        return version == ACCOUNT_SCHEMA_REVISION
-    return version in FIXTURE_SCHEMA_REVISIONS
+
+
+def schema_ready(connection, role: str, *, account_entry: bool = False) -> bool:
+    versions = ACCOUNT_SCHEMA_REVISIONS if account_entry else FIXTURE_SCHEMA_REVISIONS
+    return schema_revision(connection, role) in versions

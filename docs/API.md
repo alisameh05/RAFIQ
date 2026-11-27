@@ -89,7 +89,10 @@ The browser clears decrypted views and active keys across tabs on sign-out, acco
 | Module | Method and path | Operation ID |
 | --- | --- | --- |
 | M01 | `GET /api/v1/account` | `getAccount` |
+| M01 | `GET /api/v1/account/controlled-use` | `getControlledUse` |
 | M01 | `PUT /api/v1/account/controlled-use` | `acceptControlledUse` |
+| M01 | `GET /api/v1/account/workspace` | `getDriverWorkspace` |
+| M01 | `POST /api/v1/account/readiness` | `prepareReadinessHandoff` |
 | M01 | `PATCH /api/v1/account` | `updateAccount` |
 | M01 | `GET /api/v1/account/preferences` | `getPreferences` |
 | M01 | `PUT /api/v1/account/preferences` | `putPreferences` |
@@ -261,6 +264,23 @@ paths:
         "409": {"$ref":"#/components/responses/Http409"}
         "500": {"$ref":"#/components/responses/Http500"}
   "/api/v1/account/controlled-use":
+    get:
+      operationId: "getControlledUse"
+      tags: ["M01"]
+      description: "Read the current plain-text publication for review before explicit acceptance."
+      x-authority: "Verified eligible driver · onboarding access"
+      responses:
+        "200":
+          description: "Current controlled-use publication."
+          headers:
+            X-Request-Id: {"$ref":"#/components/headers/RequestId"}
+            Cache-Control: {"$ref":"#/components/headers/CachePrivate"}
+          content:
+            "application/json":
+              schema: {"$ref":"#/components/schemas/ControlledUseConditions"}
+        "401": {"$ref":"#/components/responses/Http401"}
+        "403": {"$ref":"#/components/responses/Http403"}
+        "503": {"$ref":"#/components/responses/Http503"}
     put:
       operationId: "acceptControlledUse"
       tags: ["M01"]
@@ -288,6 +308,43 @@ paths:
         "409": {"$ref":"#/components/responses/Http409"}
         "422": {"$ref":"#/components/responses/Http422"}
         "500": {"$ref":"#/components/responses/Http500"}
+        "503": {"$ref":"#/components/responses/Http503"}
+  "/api/v1/account/workspace":
+    get:
+      operationId: "getDriverWorkspace"
+      tags: ["M01"]
+      description: "Resolve the private Dashboard for the current driver."
+      x-authority: "Verified eligible driver · current controlled-use acceptance"
+      responses:
+        "200":
+          description: "Authorized Dashboard context."
+          headers:
+            X-Request-Id: {"$ref":"#/components/headers/RequestId"}
+            Cache-Control: {"$ref":"#/components/headers/CachePrivate"}
+          content:
+            "application/json":
+              schema: {"$ref":"#/components/schemas/DriverEntryContext"}
+        "401": {"$ref":"#/components/responses/Http401"}
+        "403": {"$ref":"#/components/responses/Http403"}
+        "503": {"$ref":"#/components/responses/Http503"}
+  "/api/v1/account/readiness":
+    post:
+      operationId: "prepareReadinessHandoff"
+      tags: ["M01"]
+      description: "Resolve authorized stationary readiness context without starting monitoring."
+      x-authority: "Verified eligible driver · current controlled-use acceptance"
+      responses:
+        "200":
+          description: "Authorized stationary readiness context."
+          headers:
+            X-Request-Id: {"$ref":"#/components/headers/RequestId"}
+            Cache-Control: {"$ref":"#/components/headers/CachePrivate"}
+          content:
+            "application/json":
+              schema: {"$ref":"#/components/schemas/DriverEntryContext"}
+        "401": {"$ref":"#/components/responses/Http401"}
+        "403": {"$ref":"#/components/responses/Http403"}
+        "503": {"$ref":"#/components/responses/Http503"}
   "/api/v1/account/preferences":
     get:
       operationId: "getPreferences"
@@ -3394,6 +3451,24 @@ components:
     ActorState:
       type: "string"
       enum: ["verificationRequired","onboardingRequired","active","restricted","releasePending"]
+    ControlledUseConditions:
+      type: "object"
+      additionalProperties: false
+      required: ["version", "stationary", "supervised", "camera", "recording"]
+      properties:
+        version: {"type":"string","minLength":1,"maxLength":64}
+        stationary: {"type":"string","minLength":1,"maxLength":1000}
+        supervised: {"type":"string","minLength":1,"maxLength":1000}
+        camera: {"type":"string","minLength":1,"maxLength":1000}
+        recording: {"type":"string","minLength":1,"maxLength":1000}
+    DriverEntryContext:
+      type: "object"
+      additionalProperties: false
+      required: ["destination", "accountId", "acceptedVersion"]
+      properties:
+        destination: {"type":"string","enum":["dashboard","readiness"]}
+        accountId: {"type":"string","format":"uuid"}
+        acceptedVersion: {"type":"string","minLength":1,"maxLength":64}
     Account:
       type: "object"
       additionalProperties: false
@@ -5395,6 +5470,10 @@ REST operations use `application/problem+json` with a stable `type` URN, `code`,
 | `413` / `415` / `416` / `422` | Respect body bounds, accepted media and range, or field validation. No retry of identical invalid input. |
 | `429` | Wait for `Retry-After` and recheck current authority. Provider allowance can use a distinct safe code. |
 | `500` / `502` / `503` / `504` | Safe internal or dependency failure. Retry only documented idempotent or replay-safe operations within their deadline. Consult status after ambiguous emergency dispatch. |
+
+For Phase 1, a verified eligible driver reads the current publication at `GET /api/v1/account/controlled-use`. The response carries `version` and the plain-text `stationary`, `supervised`, `camera` and `recording` fields. Acceptance requires `accepted: true` and the exact published version. A stale version returns `409 controlled_use_changed`. Repeat the same successful PUT safely while that version remains current.
+
+`GET /api/v1/account/workspace` and `POST /api/v1/account/readiness` resolve Dashboard and the stationary readiness handoff for the authenticated driver. Both return `destination`, `accountId` and `acceptedVersion` after current verification, eligibility and acceptance checks. The readiness POST prepares context without starting monitoring. An eligible driver awaiting acceptance receives `403 controlled_use_required`. The publication and private endpoints remain held with `503 account_unavailable` when no approved version is published. [Publication and evidence](ACCOUNT_ENTRY_TEST.md#controlled-use-acceptance-and-private-entry)
 
 Use action-specific codes where the client needs to distinguish states. Required distinctions include `controlled_use_changed`, `sync_incomplete`, `idempotency_conflict`, `clip_quota_exceeded`, `confirmation_expired`, `channel_not_qualified`, `provider_not_qualified`, `provider_connection_expired`, `provider_allowance_exhausted`, `mfa_required`, `fresh_mfa_required`, and `last_owner_required`. Use `provider_allowance_exhausted` with `429` and `Retry-After` only when a reset time is known. Availability and suppression of individual data points use typed success states. MCP and provider event handling use their protocol or provider-specific error and acknowledgment rules.
 
