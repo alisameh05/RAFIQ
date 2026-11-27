@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import './styles.css';
 import { accountEntryEnabled } from './account-entry/config';
 
-export const metadata = { title: 'RAFIQ' };
+export const metadata = { title: 'RAFIQ', icons: { icon: '/landing/rafiq-favicon.svg' } };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   const hosted = process.env.NEXT_PUBLIC_RAFIQ_HOSTED_VALIDATION === 'true';

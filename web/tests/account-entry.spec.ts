@@ -85,11 +85,12 @@ test('closed signup preserves sign in and Clerk declines direct enrollment', asy
   test.skip(!base || mode !== 'closed', 'Requires the isolated Invite-only Clerk development instance.');
   await setup(page);
   await page.goto(base!);
-  await expect(page.getByText('Public signup is pending release.')).toBeVisible();
+  const header = page.getByRole('banner');
+  await expect(header.getByText('Public signup is pending release.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Create account' })).toHaveCount(0);
   await page.goto(new URL('/sign-up', base).href);
-  await expect(page.getByText('Public signup is pending release.')).toBeVisible();
-  await page.getByRole('link', { name: 'Sign in' }).click();
+  await expect(header.getByText('Public signup is pending release.')).toBeVisible();
+  await header.getByRole('link', { name: 'Sign in' }).click();
   await expect(page).toHaveURL(/\/sign-in/);
   await expect(page.getByRole('button', { name: /continue/i }).first()).toBeVisible();
   const outcome = await page.evaluate(async (emailAddress) => {
