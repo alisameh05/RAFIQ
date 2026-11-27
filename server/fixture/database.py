@@ -3,7 +3,7 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-SCHEMA_REVISION = "0003_validation_callback"
+SCHEMA_REVISION = "0004_driver_accounts"
 
 
 def database_role(mode: str | None, role: str) -> str:

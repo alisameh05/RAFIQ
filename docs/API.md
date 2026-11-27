@@ -199,7 +199,7 @@ paths:
     get:
       operationId: "getAccount"
       tags: ["M01"]
-      description: "Return the current identity or onboarding state after valid Clerk sign-in. Restrict onboarding and verification states to identity already known to Clerk. For suspended sessions return the standard restricted problem with the public support contact."
+      description: "Return the current eligibility gate after checking the Clerk session and its verified primary email. First resolution creates a stable driver account for the Clerk subject. Unverified sessions receive a verification-required problem without account fields. Restricted accounts receive the standard restricted problem with the published support contact."
       x-authority: "Clerk session · account status only"
       responses:
         "200":
@@ -214,6 +214,7 @@ paths:
         "401": {"$ref":"#/components/responses/Http401"}
         "403": {"$ref":"#/components/responses/Http403"}
         "500": {"$ref":"#/components/responses/Http500"}
+        "503": {"$ref":"#/components/responses/Http503"}
     patch:
       operationId: "updateAccount"
       tags: ["M01"]
