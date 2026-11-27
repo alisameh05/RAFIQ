@@ -44,6 +44,13 @@ jobs:
           path: web/test-results/**/profile-*.png
           if-no-files-found: error
           retention-days: 14
+      - name: Upload synthetic monitoring settings evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: synthetic-monitoring-settings-browser
+          path: web/test-results/**/monitoring-*.png
+          if-no-files-found: error
+          retention-days: 14
       - name: Validate configuration and ignored local files
         run: |
           docker compose config --quiet

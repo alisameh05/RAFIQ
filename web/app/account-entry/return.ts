@@ -1,10 +1,11 @@
-export type PrivateDestination = 'dashboard' | 'readiness' | 'profile' | 'sessions' | 'privacy';
+export type PrivateDestination = 'dashboard' | 'readiness' | 'profile' | 'monitoring' | 'sessions' | 'privacy';
 export type EntryContext = 'account' | PrivateDestination | undefined;
 
 export const privateTitles: Record<PrivateDestination, string> = {
   dashboard: 'Dashboard',
   readiness: 'Stationary readiness',
   profile: 'Profile',
+  monitoring: 'Monitoring settings',
   sessions: 'Sessions',
   privacy: 'Privacy',
 };
@@ -14,6 +15,7 @@ export function privateDestination(value: unknown): PrivateDestination | undefin
     case 'dashboard':
     case 'readiness':
     case 'profile':
+    case 'monitoring':
     case 'sessions':
     case 'privacy':
       return value;

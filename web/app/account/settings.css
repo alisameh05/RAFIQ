@@ -126,3 +126,103 @@
   .settings-selector { display: block; border-block-end: 1px solid #42463e; }
   .settings-selector summary { padding-block: 0.625rem; cursor: pointer; }
 }
+
+.entry .monitoring-form > p { margin-block-end: 1.5rem; }
+
+.entry .monitoring-section {
+  min-inline-size: 0;
+  padding-block: 1.5rem;
+  border-block-start: 1px solid #42463e;
+}
+
+.monitoring-section h2 { margin: 0 0 1rem; font-size: 1.125rem; }
+
+.entry .monitoring-section select {
+  display: block;
+  box-sizing: border-box;
+  max-inline-size: 100%;
+  inline-size: min(25rem, 100%);
+  min-block-size: 2.75rem;
+  padding: 0.625rem;
+  border: 1px solid #858980;
+  border-radius: 0.5rem;
+  font: inherit;
+  background: #171b18;
+  color: var(--ink);
+  color-scheme: dark;
+}
+
+.entry .monitoring-section select:focus-visible,
+.entry .monitoring-choice input:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.entry .monitoring-section .monitoring-choice {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  min-block-size: 2.75rem;
+  gap: 0.75rem;
+  margin: 0;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.entry .monitoring-choice input {
+  flex: none;
+  width: 1.125rem;
+  min-height: 0;
+  height: 1.125rem;
+  padding: 0;
+  margin: 0;
+  accent-color: #bbbaa6;
+}
+
+.monitoring-choice-state { color: var(--settings-stone); margin-inline-start: 0.35rem; }
+
+.monitoring-visibility {
+  min-inline-size: 0;
+  margin: 1rem 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.monitoring-visibility legend { padding: 0; font-weight: 700; }
+
+.warning-example {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  max-inline-size: 32rem;
+  padding: 0.875rem;
+  border: 1px solid #bbbaa6;
+  border-radius: 0.5rem;
+  background: #171b18;
+  overflow-wrap: anywhere;
+}
+
+.warning-example[data-visibility="enhanced"] {
+  border-width: 2px;
+  font-size: 1.25rem;
+}
+
+.warning-example-cue {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: 1.5em;
+  block-size: 1.5em;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-weight: 700;
+}
+
+.warning-example[data-visibility="enhanced"] .warning-example-cue {
+  border-width: 2px;
+  font-size: 1.3em;
+}
+
+.entry .warning-example p { margin: 0.15rem 0 0; color: var(--ink); }
+
+.entry section:has(> #readiness-preferences) .warning-example { margin-block-end: 1rem; }

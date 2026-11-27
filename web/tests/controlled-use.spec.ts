@@ -3,6 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 const origin = process.env.RAFIQ_LANDING_PENDING_ORIGIN;
 const api = 'https://accounts.example.test/api/v1/account';
+const defaultPreferences = { cameraDeviceId: null as string | null, warningAudio: false, warningVisibility: 'default' };
 
 async function signInFixture(page: Page, driver: string, session = driver) {
   const userId = 'user_' + driver;
@@ -124,6 +125,7 @@ test('P06 announces progress, retries safely and requires a fresh acceptance aft
       acceptedVersion = body.version;
       return route.fulfill({ json: { ...account, status: 'active' } });
     }
+    if (suffix === '/preferences') return route.fulfill({ json: defaultPreferences });
     expect(suffix).toBe('/readiness');
     expect(request.method()).toBe('POST');
     if (!active) return route.fulfill({ status: 403, json: { code: 'controlled_use_required' } });
@@ -202,6 +204,7 @@ test('a fresh session for the same driver keeps the verified readiness return', 
     if (route.request().url() === api) {
       return route.fulfill({ json: { accountId: 'fixture-A', status: 'active', verified: true } });
     }
+    if (route.request().url() === api + '/preferences') return route.fulfill({ json: defaultPreferences });
     expect(route.request().url()).toBe(api + '/readiness');
     return route.fulfill({ json: { accountId: 'fixture-A', destination: 'readiness', acceptedVersion: 'controlled-use-1' } });
   });
@@ -683,4 +686,223 @@ test('D06 and D22 entries require an eligible current driver', async ({ page, re
     await expect(page.getByRole('heading', { name: 'Account restricted' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Return to Profile' })).toHaveCount(0);
   }
+});
+
+
+const monitoringPath = '/account/monitoring';
+const cameraId = 'synthetic-integrated-camera';
+const alternateCameraId = 'synthetic-built-in-camera';
+async function installCameraFixture(page: Page, mode: 'granted' | 'denied' | 'missing') {
+  await page.addInitScript(({ cameraId, alternateCameraId, mode }) => {
+    const state = { mode: mode as string, constraints: [] as MediaStreamConstraints[], stopped: 0 };
+    Object.assign(window, { syntheticCamera: state });
+    const cameras = [
+      { kind: 'videoinput', deviceId: cameraId, label: 'Integrated Camera' },
+      { kind: 'videoinput', deviceId: alternateCameraId, label: 'Built-in Camera' },
+      { kind: 'videoinput', deviceId: 'external', label: 'External USB Camera' },
+      { kind: 'audioinput', deviceId: 'internal-mic', label: 'Built-in microphone' },
+    ];
+    const query = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = async (descriptor) => {
+      if (descriptor.name !== 'camera') return query(descriptor);
+      return { state: state.mode === 'denied' ? 'denied' : 'granted' } as PermissionStatus;
+    };
+    navigator.mediaDevices.enumerateDevices = async () => (state.mode === 'denied' ? [] : cameras
+      .filter((camera) => state.mode !== 'missing' || camera.deviceId !== cameraId)) as MediaDeviceInfo[];
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      if (constraints) state.constraints.push(constraints);
+      if (state.mode === 'denied') throw new DOMException('Fixture denied', 'NotAllowedError');
+      if (state.mode === 'unopenable') {
+        await new Promise<void>((resolve) => window.addEventListener('release-camera-probe', () => resolve(), { once: true }));
+        throw new DOMException('Fixture camera cannot open', 'OverconstrainedError');
+      }
+      return { getTracks: () => [{ stop: () => state.stopped++ }] } as unknown as MediaStream;
+    };
+  }, { cameraId, alternateCameraId, mode });
+}
+
+test('D20 retries an owned replacement, persists it across reload, and hands it to a later D02 attempt', async ({ page }) => {
+  await signInFixture(page, 'monitoringA');
+  await installCameraFixture(page, 'granted');
+  let stored = defaultPreferences;
+  let writes = 0;
+  let signalSave!: () => void;
+  const saveStarted = new Promise<void>((resolve) => { signalSave = resolve; });
+  let releaseSave!: () => void;
+  const holdSave = new Promise<void>((resolve) => { releaseSave = resolve; });
+  await page.route(api + '**', async (route) => {
+    const request = route.request();
+    if (request.url() === api) return route.fulfill({ json: profileFixture(null) });
+    if (request.url().endsWith('/workspace')) return route.fulfill({ json: { destination: 'dashboard', accountId: syntheticAccount, acceptedVersion: 'controlled-use-1' } });
+    if (request.url().endsWith('/readiness')) {
+      expect(request.method()).toBe('POST');
+      return route.fulfill({ json: { destination: 'readiness', accountId: syntheticAccount, acceptedVersion: 'controlled-use-1' } });
+    }
+    expect(request.url()).toBe(api + '/preferences');
+    if (request.method() === 'PUT') {
+      expect(request.postDataJSON()).toEqual({ cameraDeviceId: cameraId, warningAudio: true, warningVisibility: 'enhanced' });
+      if (++writes === 1) {
+        signalSave();
+        await holdSave;
+        return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+      }
+      stored = request.postDataJSON();
+    }
+    return route.fulfill({ json: stored });
+  });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(origin + '/account/profile');
+  await page.getByRole('navigation', { name: 'Settings', exact: true }).getByRole('link', { name: 'Monitoring' }).click();
+  await expect(page).toHaveURL(origin + monitoringPath);
+  await expect(page.getByRole('heading', { name: 'Monitoring settings' })).toBeFocused();
+  const camera = page.getByRole('combobox', { name: 'Built-in camera' });
+  const audio = page.getByRole('switch', { name: 'Warning audio' });
+  const enhanced = page.getByRole('radio', { name: 'Enhanced visibility' });
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  await expect(camera.locator('option')).toHaveText(['Automatic selection', 'Integrated Camera', 'Built-in Camera']);
+  await expect(audio).not.toBeChecked();
+  await expect(save).toBeDisabled();
+  await camera.selectOption(cameraId);
+  await audio.press('Space');
+  await expect(audio).toBeFocused();
+  await expect(audio).toBeChecked();
+  const sample = page.getByText('Eyes closed for 2 seconds', { exact: true });
+  const initialSize = await sample.evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+  await page.getByRole('radio', { name: 'Default', exact: true }).press('ArrowDown');
+  await expect(enhanced).toBeFocused();
+  await expect(enhanced).toBeChecked();
+  await expect(sample).toBeVisible();
+  expect(await sample.evaluate((element) => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThan(initialSize);
+  await expect(page.getByText('!', { exact: true })).toBeVisible();
+  await audio.press('Space');
+  await expect(audio).not.toBeChecked();
+  await expect(sample).toBeVisible();
+  await audio.press('Space');
+
+  await save.press('Enter');
+  await saveStarted;
+  await expect(save).toBeDisabled();
+  await expect(page.getByRole('status').filter({ hasText: 'Saving…' })).toHaveCount(1);
+  await save.press('Enter');
+  expect(writes).toBe(1);
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toHaveCount(0);
+  releaseSave();
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Couldn’t save monitoring preferences. Your changes are still here.');
+  await expect(camera).toHaveValue(cameraId);
+  await expect(enhanced).toBeChecked();
+  await page.getByRole('button', { name: 'Retry', exact: true }).press('Enter');
+  await expect(save).toBeFocused();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toHaveText('Saved. Changes apply to later sessions.');
+  expect(writes).toBe(2);
+  await page.reload();
+  await expect(camera).toHaveValue(cameraId);
+  await expect(audio).toBeChecked();
+  await expect(enhanced).toBeChecked();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toHaveCount(0);
+
+  await page.screenshot({ path: test.info().outputPath('monitoring-desktop.png'), fullPage: true });
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect(camera).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: test.info().outputPath('monitoring-' + width + '.png'), fullPage: true });
+  }
+  await page.setViewportSize({ width: 640, height: 900 });
+  const zoom = await page.addStyleTag({ content: 'html { zoom: 200% }' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(640);
+  await expect(save).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('monitoring-200-percent.png'), fullPage: true });
+  await zoom.evaluate((element) => element.parentNode?.removeChild(element));
+
+  await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
+  await page.getByRole('link', { name: 'Start session' }).click();
+  await expect(page.getByRole('heading', { name: 'Stationary readiness' })).toBeFocused();
+  const handoff = page.getByRole('region', { name: 'Saved monitoring preferences' });
+  await expect(handoff).toContainText('Integrated Camera');
+  await expect(handoff).toContainText('Warning audio on');
+  await expect(handoff).toContainText('Enhanced visibility');
+  await expect(handoff.getByText('Eyes closed for 2 seconds', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start monitoring' })).toHaveCount(0);
+});
+
+test('D20 recovers from blocked access and a missing saved camera with a video-only recheck', async ({ page }) => {
+  await signInFixture(page, 'monitoringA');
+  await installCameraFixture(page, 'denied');
+  const stored = { ...defaultPreferences, cameraDeviceId: cameraId };
+  await page.route(api + '**', (route) => route.fulfill({ json: route.request().url() === api ? profileFixture(null) : stored }));
+  await page.goto(origin + monitoringPath);
+  const cameraStatus = page.getByRole('status').filter({ hasText: /camera/i });
+  const recheck = page.getByRole('button', { name: 'Recheck', exact: true });
+  await expect(cameraStatus).toContainText('Camera permission is blocked');
+  await expect(cameraStatus).toContainText('Chrome site permissions');
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  await page.evaluate(() => {
+    (window as unknown as { syntheticCamera: { mode: string } }).syntheticCamera.mode = 'missing';
+  });
+  await recheck.press('Enter');
+  await expect(recheck).toBeFocused();
+  await expect(cameraStatus).toContainText('Saved camera is unavailable');
+  const probe = await page.evaluate(() => (window as unknown as {
+    syntheticCamera: { constraints: MediaStreamConstraints[]; stopped: number };
+  }).syntheticCamera);
+  expect(probe.constraints).toHaveLength(1);
+  expect(probe.constraints[0].audio).toBe(false);
+  expect(probe.stopped).toBe(1);
+  await expect(page.locator('video')).toHaveCount(0);
+  const camera = page.getByRole('combobox', { name: 'Built-in camera' });
+  await expect(camera).toHaveValue(cameraId);
+  await camera.selectOption(alternateCameraId);
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  await expect(save).toBeEnabled();
+  await page.evaluate(() => {
+    (window as unknown as { syntheticCamera: { mode: string } }).syntheticCamera.mode = 'unopenable';
+  });
+  await recheck.press('Enter');
+  await expect(cameraStatus).toContainText('Checking camera access');
+  await expect(save).toBeDisabled();
+  await save.press('Enter');
+  await expect(camera).not.toHaveAttribute('aria-invalid', 'true');
+  await page.evaluate(() => window.dispatchEvent(new Event('release-camera-probe')));
+  await expect(cameraStatus).toContainText('Selected camera is unavailable');
+  await expect(camera).toHaveValue(alternateCameraId);
+  await camera.selectOption(cameraId);
+  await expect(camera).not.toHaveAttribute('aria-invalid', 'true');
+});
+
+test('D20 discards a previous driver’s late save response when Clerk switches accounts', async ({ page }) => {
+  await signInFixture(page, 'monitoringA');
+  await installCameraFixture(page, 'granted');
+  let signalSave!: () => void;
+  const saveStarted = new Promise<void>((resolve) => { signalSave = resolve; });
+  let releaseSave!: () => void;
+  const holdSave = new Promise<void>((resolve) => { releaseSave = resolve; });
+  await page.route(api + '**', async (route) => {
+    const request = route.request();
+    const secondDriver = request.headers().authorization === 'Bearer synthetic-driver-B';
+    if (request.url() === api) {
+      return route.fulfill({ json: { ...profileFixture(null), accountId: secondDriver ? 'synthetic-b' : syntheticAccount } });
+    }
+    if (request.method() === 'PUT') {
+      expect(secondDriver).toBe(false);
+      signalSave();
+      await holdSave;
+      return route.fulfill({ json: request.postDataJSON() }).catch(() => {});
+    }
+    return route.fulfill({ json: secondDriver ? { ...defaultPreferences, cameraDeviceId: alternateCameraId } : defaultPreferences });
+  });
+  await page.goto(origin + monitoringPath);
+  const camera = page.getByRole('combobox', { name: 'Built-in camera' });
+  await camera.selectOption(cameraId);
+  await page.getByRole('switch', { name: 'Warning audio' }).press('Space');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await saveStarted;
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rafiq-fixture-switch', { detail: {
+    userId: 'user_monitoringB', sessionId: 'sess_monitoringB', token: 'synthetic-driver-B',
+  } })));
+  await expect(camera).toHaveValue(alternateCameraId);
+  releaseSave();
+  await expect(page.getByRole('switch', { name: 'Warning audio' })).not.toBeChecked();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toHaveCount(0);
+  await expect(camera).toHaveValue(alternateCameraId);
 });

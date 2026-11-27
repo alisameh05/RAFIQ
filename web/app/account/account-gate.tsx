@@ -9,6 +9,7 @@ import { VerifyEmail } from '../account-entry/verify-email';
 import { hasPendingSignOut, listenForPrivateAccess, notifyPrivateAccess, rememberPendingSignOut, setPendingSignOut } from './private-access';
 import { DriverProfile, type ProfileAccount } from './driver-profile';
 import { DriverNavigation, SettingsLayout } from './settings-layout';
+import { MonitoringSettings, ReadinessPreferences, parsePreferences, type Preferences } from './monitoring-preferences';
 
 const sections = [
   ['stationary', 'Stationary setup'],
@@ -29,7 +30,7 @@ type GateProps = {
 };
 
 function isSettingsEntry(view: View) {
-  return view === 'profile' || view === 'privacy' || view === 'sessions';
+  return view === 'profile' || view === 'monitoring' || view === 'privacy' || view === 'sessions';
 }
 
 function profileAccount(result: Record<string, unknown>): ProfileAccount {
@@ -97,6 +98,8 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   const [verified, setVerified] = useState(false);
   const [profile, setProfile] = useState<ProfileAccount | null>(null);
   const [profileDraft, setProfileDraft] = useState<{ accountId: string; value: string } | null>(null);
+  const [preferencesDraft, setPreferencesDraft] = useState<{ accountId: string; value: Preferences } | null>(null);
+  const [preferencesResume, setPreferencesResume] = useState(0);
   const [conditions, setConditions] = useState<Conditions | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
   const accepted = conditions !== null && selectedVersion === conditions.version;
@@ -168,6 +171,9 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         if (account.status === 'active') {
           if (typeof account.accountId !== 'string' || !account.accountId) throw new Error();
           currentAccount.current = account.accountId;
+          if (target === 'monitoring') {
+            setPreferencesDraft((current) => current?.accountId === account.accountId ? current : null);
+          }
           if (target === 'profile' && destination === 'profile') applyProfile(profileAccount(account));
           await openDestination(target, account.accountId, signal);
         } else if (account.status === 'onboardingRequired') {
@@ -228,7 +234,10 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     inFlight.current = false;
     setVerified(false);
     setProfile(null);
-    if (next !== 'unavailable' && next !== 'checking') setProfileDraft(null);
+    if (next !== 'unavailable' && next !== 'checking') {
+      setProfileDraft(null);
+      setPreferencesDraft(null);
+    }
     setConditions(null);
     setSelectedVersion(null);
     setSaving(false);
@@ -255,6 +264,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         return true;
       case 'controlled_use_required':
         setProfileDraft(null);
+        setPreferencesDraft(null);
         clearPrivateView('checking');
         window.location.replace(accountPath(scopedEntry.current));
         return true;
@@ -366,6 +376,21 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     }
   }
 
+  async function requestPreferences(localSignal: AbortSignal, draft?: Preferences) {
+    const scope = requestScope.current;
+    const owner = currentAccount.current;
+    if (!scope || !owner) throw new Error();
+    const signal = AbortSignal.any([scope.signal, localSignal]);
+    try {
+      const result = await request('/account/preferences', signal, draft === undefined ? 'GET' : 'PUT', draft);
+      if (owner !== currentAccount.current) throw new GateProblem('authentication_required');
+      return parsePreferences(result);
+    } catch (error) {
+      if (!signal.aborted) showAccessProblem(error);
+      throw error;
+    }
+  }
+
   async function recheckSettings(view: View, owner: string | null, signal: AbortSignal) {
     const version = profileRequestVersion.current;
     const canRefresh = view === 'profile' && !editingProfile.current;
@@ -411,6 +436,8 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
       const { signal } = controller;
       try {
         await recheckSettings(view, currentAccount.current, signal);
+        if (signal.aborted) return;
+        if (view === 'monitoring') setPreferencesResume((count) => count + 1);
         if (panel.current) panel.current.hidden = false;
       } catch (error) {
         if (!signal.aborted && !showAccessProblem(error)) clearPrivateView('unavailable');
@@ -545,6 +572,23 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     </div>;
   }
 
+  if (destination === 'monitoring' && (view === 'monitoring' || view === 'checking' || view === 'unavailable')) {
+    return <div ref={panel} className="driver-private">
+      <SettingsLayout current="monitoring" heading={heading}>
+        {view === 'monitoring' ? <MonitoringSettings request={requestPreferences} resume={preferencesResume}
+          draft={preferencesDraft?.value} changeDraft={(value) => {
+            const accountId = currentAccount.current;
+            setPreferencesDraft(value && accountId ? { accountId, value } : null);
+          }} />
+          : view === 'checking' ? <p role="status">Checking account status…</p>
+          : <>
+            <p role="alert">Couldn’t check account access.</p>
+            <button className="entry-action" type="button" onClick={retry}>Retry</button>
+          </>}
+      </SettingsLayout>
+    </div>;
+  }
+
   if (view === 'privacy' || view === 'sessions') {
     return <div ref={panel} className="driver-private">
       <SettingsLayout current={view} heading={heading}>
@@ -604,7 +648,8 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         <p><Link href={privatePath('readiness')} prefetch={false}>Start session</Link></p>
       </>}
       {view === 'readiness' && <>
-        <p>Your account and controlled-use acceptance are current. Set up the front-facing camera and make your recording choice while stationary when readiness is available.</p>
+        <p>Your account and controlled-use acceptance are current. Camera readiness and monitoring are currently unavailable.</p>
+        <ReadinessPreferences request={requestPreferences} />
         <p><Link href={privatePath('dashboard')} prefetch={false}>Return to Dashboard</Link></p>
       </>}
       {view === 'restricted' && <RestrictedAccountMessage supportContact={supportContact} />}

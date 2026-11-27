@@ -3,7 +3,7 @@ import type { ReactNode, Ref } from 'react';
 import { privatePath, privateTitles } from '../account-entry/return';
 import './settings.css';
 
-type Section = 'profile' | 'privacy' | 'sessions';
+type Section = 'profile' | 'monitoring' | 'privacy' | 'sessions';
 
 export function DriverNavigation({ current }: { current: 'dashboard' | 'sessions' | 'settings' }) {
   return <nav className="driver-navigation" aria-label="Driver workspace">
@@ -16,10 +16,12 @@ export function DriverNavigation({ current }: { current: 'dashboard' | 'sessions
   </nav>;
 }
 
-function SettingsLinks({ current }: { current: 'profile' | 'privacy' }) {
+function SettingsLinks({ current }: { current: Exclude<Section, 'sessions'> }) {
   return <nav aria-label="Settings">
     <Link href={privatePath('profile')} prefetch={false}
       aria-current={current === 'profile' ? 'page' : undefined}>Profile</Link>
+    <Link href={privatePath('monitoring')} prefetch={false}
+      aria-current={current === 'monitoring' ? 'page' : undefined}>Monitoring</Link>
     <Link href={privatePath('privacy')} prefetch={false}
       aria-current={current === 'privacy' ? 'page' : undefined}>Privacy</Link>
   </nav>;
