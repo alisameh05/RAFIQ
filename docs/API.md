@@ -839,7 +839,8 @@ paths:
     put:
       operationId: "putRecordingConsent"
       tags: ["M04"]
-      description: "Compare current revision, recording categories, and requested bounds. Consent revocation discards unsent items and invalidates pending publication. Retry an identical accepted change safely."
+      description: "Replace settings only when expectedRevision matches the current owned revision. An identical retry against the immediately preceding revision returns the current acknowledgment while that change is still current. A superseded write returns 409 recording_consent_changed. Saving enabled false advances the withdrawal fence even when already off. Pending publication must check that fence in its commit transaction."
+      x-withdrawal-reconciliation: "Stop locally before PUT. On a revision conflict, read current consent and retry enabled false with the fresh revision and its saved preferences. Keep the local stop pending until the account acknowledges it."
       x-authority: "Verified eligible driver · current owner and action"
       requestBody:
         required: true

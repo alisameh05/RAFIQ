@@ -484,3 +484,107 @@ def test_monitoring_preferences_are_owned_replacements_and_keep_live_policy_out(
         with publisher.begin() as connection:
             connection.execute(text("DELETE FROM rafiq_fixture.controlled_use_publication"))
         publisher.dispose()
+
+
+def test_recording_consent_defaults_replay_and_withdrawal_fence(accounts, published_conditions):
+    client, session, _ = accounts
+    owner, headers = session()
+    _, other = session()
+    path = "/api/v1/recording-consent"
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers=headers).status_code == 403
+    for driver in (headers, other):
+        assert client.put(ACCOUNT + "/controlled-use", headers=driver,
+                          json={"version": "controlled-use-1", "accepted": True}).status_code == 200
+
+    initial = client.get(path, headers=headers)
+    assert initial.status_code == 200
+    assert initial.headers["cache-control"] == "private, no-store"
+    default = {"enabled": False, "behaviors": [], "preSeconds": 3, "postSeconds": 3}
+    assert initial.json()["settings"] == default
+
+    def change(revision, settings):
+        return client.put(path, headers=headers, json={"expectedRevision": revision, "settings": settings})
+
+    start = initial.json()["revision"]
+    for invalid in ({"preSeconds": -1}, {"postSeconds": 6}, {"postSeconds": 1.5},
+                    {"preSeconds": True}, {"behaviors": ["reaching"]}, {"behaviors": ["eating", "eating"]}):
+        assert change(start, {**default, **invalid}).status_code == 422
+
+    allowed = {"enabled": True, "behaviors": []}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        responses = list(pool.map(lambda _: change(start, allowed), range(4)))
+    assert all(response.status_code == 200 for response in responses)
+    acknowledged = responses[0].json()
+    assert all(response.json() == acknowledged for response in responses)
+    assert acknowledged["revision"] != start
+    assert acknowledged["settings"] == {**default, "enabled": True}
+    assert client.get(path, headers=session(subject=owner)[1]).json() == acknowledged
+    assert client.get(path, headers=other).json()["settings"] == default
+
+    revision = acknowledged["revision"]
+    updated = {**allowed, "behaviors": ["phoneUse"], "preSeconds": 0, "postSeconds": 5}
+    withdrawn = {**acknowledged["settings"], "enabled": False}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        edit = pool.submit(change, revision, updated)
+        stop = pool.submit(change, revision, withdrawn)
+        edit, stop = edit.result(), stop.result()
+    assert sorted([edit.status_code, stop.status_code]) == [200, 409]
+    if stop.status_code == 409:
+        current = client.get(path, headers=headers).json()
+        withdrawn = {**current["settings"], "enabled": False}
+        revision = current["revision"]
+        stop = change(revision, withdrawn)
+    assert stop.json()["settings"] == withdrawn
+    assert change(revision, withdrawn).json() == stop.json()
+    assert change(start, allowed).status_code == 409
+    assert change(acknowledged["revision"], updated).status_code == 409
+    assert client.get(path, headers=headers).json() == stop.json()
+
+    # Withdrawal while already off still fences a delayed enable based on that revision.
+    assert change(stop.json()["revision"], withdrawn).status_code == 200
+    assert change(stop.json()["revision"], allowed).status_code == 409
+
+
+
+def test_recording_publication_gate_rejects_captures_from_before_withdrawal(accounts, published_conditions):
+    from fixture.recording_consent import admits_recording_revision
+
+    client, session, engine = accounts
+    subject, headers = session()
+    other_subject, other_headers = session()
+    path = "/api/v1/recording-consent"
+    for driver in (headers, other_headers):
+        assert client.put(ACCOUNT + "/controlled-use", headers=driver,
+                          json={"version": "controlled-use-1", "accepted": True}).status_code == 200
+    account_id = client.get(ACCOUNT, headers=headers).json()["accountId"]
+
+    def update(settings):
+        current = client.get(path, headers=headers).json()
+        response = client.put(path, headers=headers,
+                              json={"expectedRevision": current["revision"], "settings": settings})
+        assert response.status_code == 200
+        return response.json()
+
+    def eligible(consent, behavior, driver=subject):
+        # The configured synthetic session retained the authorized category snapshot.
+        if behavior not in consent["settings"]["behaviors"]:
+            return False
+        with engine.begin() as connection:
+            connection.execute(text("SELECT set_config('rafiq.driver_subject', :subject, true)"), {"subject": driver})
+            return admits_recording_revision(connection, account_id, consent["revision"])
+
+    empty = update({"enabled": True, "behaviors": []})
+    assert not eligible(empty, "drowsiness")
+    captured = update({"enabled": True, "behaviors": ["drowsiness"]})
+    assert eligible(captured, "drowsiness")
+    assert not eligible(captured, "drowsiness", other_subject)
+    later = update({"enabled": True, "behaviors": ["eating"]})
+    assert eligible(captured, "drowsiness")
+    assert not eligible(later, "drowsiness")
+    update({**later["settings"], "enabled": False})
+    assert not eligible(captured, "drowsiness")
+    assert not eligible(later, "eating")
+    reenabled = update({"enabled": True, "behaviors": ["drowsiness"]})
+    assert eligible(reenabled, "drowsiness")
+    assert not eligible(captured, "drowsiness")

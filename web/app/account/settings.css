@@ -226,3 +226,22 @@
 .entry .warning-example p { margin: 0.15rem 0 0; color: var(--ink); }
 
 .entry section:has(> #readiness-preferences) .warning-example { margin-block-end: 1rem; }
+
+
+.recording-context {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  min-inline-size: 0;
+  margin: 1rem 0;
+  padding: 0;
+  border: 0;
+}
+
+.recording-context legend { padding: 0; font-weight: 700; }
+
+.entry .monitoring-section .recording-context select { inline-size: 100%; }
+
+@media (max-width: 36rem) {
+  .recording-context { grid-template-columns: minmax(0, 1fr); }
+}
