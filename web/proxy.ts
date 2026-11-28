@@ -1,17 +1,23 @@
 import { clerkMiddleware } from '@clerk/nextjs/server';
 import { NextResponse, type NextFetchEvent, type NextRequest } from 'next/server';
 import { accountEntryEnabled, signupOpen } from './app/account-entry/config';
-import { googleCallbackPath, googleReturnPath } from './app/account-entry/google-return';
+import { appleLinkCallback, appleLinkReturnPath } from './app/account-entry/apple-link-return';
+import { socialCallbackPath, socialReturnPath } from './app/account-entry/social-return';
 
 const clerk = clerkMiddleware({ jwtKey: process.env.CLERK_JWT_KEY });
 
 export default function proxy(request: NextRequest, event: NextFetchEvent) {
-  if (accountEntryEnabled() && request.nextUrl.pathname === googleCallbackPath
-      && request.nextUrl.searchParams.has('__clerk_redirect_url')) {
-    // Google returns to this origin. Clerk's development satellite redirect has no role here.
-    const response = NextResponse.redirect(new URL(googleReturnPath(undefined, 'failed'), request.url));
-    response.headers.set('Cache-Control', 'no-store');
-    return response;
+  if (accountEntryEnabled() && request.nextUrl.searchParams.has('__clerk_redirect_url')) {
+    // Social returns use this origin and have no development satellite redirect.
+    const path = request.nextUrl.pathname;
+    const provider = (['google', 'apple'] as const).find((item) => path === socialCallbackPath(item));
+    const fallback = provider ? socialReturnPath(provider, undefined, 'failed')
+      : path === appleLinkCallback ? appleLinkReturnPath('failed') : undefined;
+    if (fallback) {
+      const response = NextResponse.redirect(new URL(fallback, request.url));
+      response.headers.set('Cache-Control', 'no-store');
+      return response;
+    }
   }
   const surface = request.nextUrl.pathname.split('/')[1];
   const usesClerk = accountEntryEnabled()

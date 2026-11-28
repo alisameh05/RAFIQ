@@ -4,8 +4,8 @@ import { useAuth, useSignIn } from '@clerk/nextjs';
 import { isClerkAPIResponseError } from '@clerk/nextjs/errors';
 import Link from 'next/link';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
-import { GoogleAction } from '../account-entry/google-action';
-import type { GoogleResult } from '../account-entry/google-return';
+import { SocialAction } from '../account-entry/social-action';
+import type { SocialResult } from '../account-entry/social-return';
 import { clerkAction, useEntryRequest } from '../account-entry/request';
 import { RestrictedAccountMessage } from '../account-entry/restricted-account';
 import { accountPath, signInPath, type EntryContext } from '../account-entry/return';
@@ -20,7 +20,9 @@ type Props = {
   registrationOpen: boolean;
   supportContact?: string;
   googleOrigin?: string;
-  googleReturn?: GoogleResult;
+  googleReturn?: SocialResult;
+  appleOrigin?: string;
+  appleReturn?: SocialResult;
 };
 
 export function DriverAccess({ entry, recover, ...props }: Props) {
@@ -32,25 +34,26 @@ export function DriverAccess({ entry, recover, ...props }: Props) {
     : <PasswordSignIn signIn={signIn} entry={entry} {...props} />;
 }
 
-function PasswordSignIn({ signIn, entry, registrationOpen, supportContact, googleOrigin, googleReturn }: Omit<Props, 'recover'>
+function PasswordSignIn({ signIn, entry, registrationOpen, supportContact, googleOrigin, googleReturn, appleOrigin, appleReturn }: Omit<Props, 'recover'>
   & { signIn: ClerkSignIn }) {
   const { pending, throttled, run } = useEntryRequest();
-  const [googlePending, setGooglePending] = useState(false);
-  const googleChallenge = googleOrigin && googleReturn === 'verify'
+  const [socialPending, setSocialPending] = useState(false);
+  const providerNeedsVerification = (googleOrigin && googleReturn === 'verify') || (appleOrigin && appleReturn === 'verify');
+  const socialChallenge = providerNeedsVerification
     && (signIn.status === 'needs_second_factor' || signIn.status === 'needs_client_trust')
     ? signIn.supportedSecondFactors.find((factor) => factor.strategy === 'email_code')?.safeIdentifier
     : undefined;
   const restrictionCode = signIn.firstFactorVerification?.error?.code;
   const [email, setEmail] = useState('');
-  const [challenge, setChallenge] = useState<string | null>(googleChallenge ?? null);
+  const [challenge, setChallenge] = useState<string | null>(socialChallenge ?? null);
   const [feedback, setFeedback] = useState('');
-  const [restricted, setRestricted] = useState(googleReturn === 'restricted'
+  const [restricted, setRestricted] = useState((googleReturn === 'restricted' || appleReturn === 'restricted')
     && (restrictionCode === 'user_banned' || restrictionCode === 'user_locked'));
   const restrictionHeading = useRef<HTMLHeadingElement>(null);
   const address = useRef<HTMLInputElement>(null);
   const password = useRef<HTMLInputElement>(null);
   const focusAddress = useRef(false);
-  const busy = Boolean(pending) || googlePending;
+  const busy = Boolean(pending) || socialPending;
 
   useEffect(() => {
     if (restricted) restrictionHeading.current?.focus();
@@ -158,8 +161,11 @@ function PasswordSignIn({ signIn, entry, registrationOpen, supportContact, googl
         <Link className="entry-action entry-secondary" href={signInPath(entry, true)}>Recover access</Link>
       </div>
     </form>
-    <GoogleAction origin={googleOrigin} entry={entry} busy={busy} onPending={setGooglePending}
+    <SocialAction provider="google" origin={googleOrigin} entry={entry} busy={busy} onPending={setSocialPending}
       result={googleReturn === 'verify' || googleReturn === 'restricted' ? 'failed' : googleReturn} />
+    <SocialAction provider="apple" origin={appleOrigin} entry={entry} busy={busy} onPending={setSocialPending}
+      result={appleReturn === 'verify' || appleReturn === 'restricted' ? 'failed' : appleReturn} />
+    {appleOrigin && <p>Already have a RAFIQ account? Sign in with your usual method, then connect Apple in Profile.</p>}
     {registrationOpen && <p>New to RAFIQ? <Link href="/sign-up">Create account</Link></p>}
   </>;
 }

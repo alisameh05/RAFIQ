@@ -1,7 +1,7 @@
 import { auth } from '@clerk/nextjs/server';
 import { notFound, redirect } from 'next/navigation';
 import { connection } from 'next/server';
-import { accountEntryEnabled, googleEntryOrigin, signupOpen } from '../account-entry/config';
+import { accountEntryEnabled, socialEntryOrigin, signupOpen } from '../account-entry/config';
 import { EntryIdentity, EntryShell } from '../account-entry/shell';
 import { Signup } from './signup';
 
@@ -13,5 +13,6 @@ export default async function SignupPage() {
   if (!signupOpen()) redirect('/');
   if ((await auth()).userId) redirect('/account');
 
-  return <EntryIdentity><EntryShell artwork><Signup googleOrigin={await googleEntryOrigin()} /></EntryShell></EntryIdentity>;
+  const [googleOrigin, appleOrigin] = await Promise.all([socialEntryOrigin('google'), socialEntryOrigin('apple')]);
+  return <EntryIdentity><EntryShell artwork><Signup googleOrigin={googleOrigin} appleOrigin={appleOrigin} /></EntryShell></EntryIdentity>;
 }

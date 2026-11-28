@@ -253,12 +253,14 @@ def test_a_linked_subject_keeps_its_driver_workspace_and_signed_provider_claims_
         """), {"link": link, "owner": original["accountId"]})
 
     path = ACCOUNT + "/links/" + str(link)
-    for _ in range(2):
-        _, linked = session(subject=subject)
+    relay = "hidden-address@relay.example.test"
+    for claims in (None, {"email": relay, "oauth_provider": "apple"}):
+        _, linked = session(subject=subject, claims=claims)
         assert client.get(ACCOUNT, headers=linked).json() == profile
         assert client.get(path, headers=linked).json()["accountId"] == original["accountId"]
+        assert client.get("/api/v1/admin/entry", headers=linked).status_code == 404
 
-    _, other = session(claims={"role": "staff"})
+    _, other = session(claims={"role": "staff", "email": relay, "oauth_provider": "apple"})
     account = client.get(ACCOUNT, headers=other).json()
     assert account["registeredEmail"] == original["registeredEmail"]
     assert account["accountId"] != original["accountId"]

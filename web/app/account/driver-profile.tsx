@@ -3,6 +3,8 @@
 import { UserProfile } from '@clerk/nextjs';
 import Link from 'next/link';
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import type { AppleLinkResult } from '../account-entry/apple-link-return';
+import { AppleLink } from './apple-link';
 import { privatePath } from '../account-entry/return';
 
 export type ProfileAccount = { accountId: string; displayName: string | null; registeredEmail: string };
@@ -10,13 +12,15 @@ export type ProfileAccount = { accountId: string; displayName: string | null; re
 type IdentityState = 'ready' | 'manage' | 'checking' | 'failed';
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed';
 
-export function DriverProfile({ account, draftValue, changeDraft, requestProfile, canManageIdentity, signOut }: {
+export function DriverProfile({ account, draftValue, changeDraft, requestProfile, canManageIdentity, signOut, appleOrigin, appleLinkResult }: {
   account: ProfileAccount;
   draftValue: string | undefined;
   changeDraft: (value?: string) => void;
   requestProfile: (displayName?: string) => Promise<void>;
   canManageIdentity: boolean;
   signOut: () => void;
+  appleOrigin?: string;
+  appleLinkResult?: AppleLinkResult;
 }) {
   const draft = draftValue ?? account.displayName ?? '';
   const [saveState, setSaveState] = useState<SaveState>('idle');
@@ -154,6 +158,8 @@ export function DriverProfile({ account, draftValue, changeDraft, requestProfile
         </button>
         {!canManageIdentity && <p>Sign-in details management is currently unavailable.</p>}
       </section>
+      {(appleOrigin || appleLinkResult) && <AppleLink origin={appleOrigin} result={appleLinkResult}
+        recheck={requestProfile} busy={dirty || saving || identity !== 'ready'} />}
       <div className="profile-row profile-links">
         <Link href={privatePath('sessions')} prefetch={false}>View session history</Link>
         <Link href={privatePath('privacy')} prefetch={false}>Privacy</Link>

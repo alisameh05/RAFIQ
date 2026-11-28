@@ -1,5 +1,6 @@
 import 'server-only';
 import { headers } from 'next/headers';
+import type { SocialProvider } from './social-return';
 
 export function accountEntryEnabled() {
   return process.env.RAFIQ_ACCOUNT_ENTRY === 'true';
@@ -12,9 +13,10 @@ export function signupOpen() {
     && process.env.CLERK_SECRET_KEY?.startsWith('sk_test_') === true;
 }
 
-export async function googleEntryOrigin(): Promise<string | undefined> {
+export async function socialEntryOrigin(provider: SocialProvider): Promise<string | undefined> {
   const origin = process.env.RAFIQ_WEB_ORIGIN;
-  if (!accountEntryEnabled() || process.env.RAFIQ_GOOGLE_SIGN_IN !== 'true' || !origin) return;
+  const enabled = provider === 'apple' ? process.env.RAFIQ_APPLE_SIGN_IN : process.env.RAFIQ_GOOGLE_SIGN_IN;
+  if (!accountEntryEnabled() || enabled !== 'true' || !origin) return;
   let url: URL;
   try {
     url = new URL(origin);
