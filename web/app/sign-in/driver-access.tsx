@@ -4,6 +4,8 @@ import { useAuth, useSignIn } from '@clerk/nextjs';
 import { isClerkAPIResponseError } from '@clerk/nextjs/errors';
 import Link from 'next/link';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
+import { GoogleAction } from '../account-entry/google-action';
+import type { GoogleResult } from '../account-entry/google-return';
 import { clerkAction, useEntryRequest } from '../account-entry/request';
 import { RestrictedAccountMessage } from '../account-entry/restricted-account';
 import { accountPath, signInPath, type EntryContext } from '../account-entry/return';
@@ -12,28 +14,43 @@ import { RecoverAccess } from './recover-access';
 
 export type ClerkSignIn = ReturnType<typeof useSignIn>['signIn'];
 
-type Props = { entry: EntryContext; recover: boolean; registrationOpen: boolean; supportContact?: string };
+type Props = {
+  entry: EntryContext;
+  recover: boolean;
+  registrationOpen: boolean;
+  supportContact?: string;
+  googleOrigin?: string;
+  googleReturn?: GoogleResult;
+};
 
-export function DriverAccess({ entry, recover, registrationOpen, supportContact }: Props) {
+export function DriverAccess({ entry, recover, ...props }: Props) {
   const { isLoaded, isSignedIn } = useAuth();
   const { signIn } = useSignIn();
   if (!isLoaded || !signIn) return <p role="status">Loading secure account access…</p>;
   if (isSignedIn) return <Link href={accountPath(entry)}>Check account status</Link>;
   return recover ? <RecoverAccess signIn={signIn} entry={entry} />
-    : <PasswordSignIn signIn={signIn} entry={entry} registrationOpen={registrationOpen} supportContact={supportContact} />;
+    : <PasswordSignIn signIn={signIn} entry={entry} {...props} />;
 }
 
-function PasswordSignIn({ signIn, entry, registrationOpen, supportContact }: Omit<Props, 'recover'> & { signIn: ClerkSignIn }) {
+function PasswordSignIn({ signIn, entry, registrationOpen, supportContact, googleOrigin, googleReturn }: Omit<Props, 'recover'>
+  & { signIn: ClerkSignIn }) {
   const { pending, throttled, run } = useEntryRequest();
+  const [googlePending, setGooglePending] = useState(false);
+  const googleChallenge = googleOrigin && googleReturn === 'verify'
+    && (signIn.status === 'needs_second_factor' || signIn.status === 'needs_client_trust')
+    ? signIn.supportedSecondFactors.find((factor) => factor.strategy === 'email_code')?.safeIdentifier
+    : undefined;
+  const restrictionCode = signIn.firstFactorVerification?.error?.code;
   const [email, setEmail] = useState('');
-  const [challenge, setChallenge] = useState<string | null>(null);
+  const [challenge, setChallenge] = useState<string | null>(googleChallenge ?? null);
   const [feedback, setFeedback] = useState('');
-  const [restricted, setRestricted] = useState(false);
+  const [restricted, setRestricted] = useState(googleReturn === 'restricted'
+    && (restrictionCode === 'user_banned' || restrictionCode === 'user_locked'));
   const restrictionHeading = useRef<HTMLHeadingElement>(null);
   const address = useRef<HTMLInputElement>(null);
   const password = useRef<HTMLInputElement>(null);
   const focusAddress = useRef(false);
-  const busy = Boolean(pending);
+  const busy = Boolean(pending) || googlePending;
 
   useEffect(() => {
     if (restricted) restrictionHeading.current?.focus();
@@ -141,6 +158,8 @@ function PasswordSignIn({ signIn, entry, registrationOpen, supportContact }: Omi
         <Link className="entry-action entry-secondary" href={signInPath(entry, true)}>Recover access</Link>
       </div>
     </form>
+    <GoogleAction origin={googleOrigin} entry={entry} busy={busy} onPending={setGooglePending}
+      result={googleReturn === 'verify' || googleReturn === 'restricted' ? 'failed' : googleReturn} />
     {registrationOpen && <p>New to RAFIQ? <Link href="/sign-up">Create account</Link></p>}
   </>;
 }

@@ -237,6 +237,37 @@ def test_private_workspace_link_resolves_only_for_its_eligible_owner(accounts, p
             connection.execute(text(f"DELETE FROM {LINKS} WHERE id = :active"), {"active": active})
 
 
+def test_a_linked_subject_keeps_its_driver_workspace_and_signed_provider_claims_grant_no_extra_access(
+    accounts, published_conditions,
+):
+    client, session, _ = accounts
+    subject, email = session()
+    consent = {"version": "controlled-use-1", "accepted": True}
+    original = client.put(ACCOUNT + "/controlled-use", headers=email, json=consent).json()
+    profile = client.patch(ACCOUNT, headers=email, json={"displayName": "Original owned profile"}).json()
+    assert profile["accountId"] == original["accountId"]
+    link = uuid4()
+    with published_conditions.begin() as connection:
+        connection.execute(text(f"""
+            INSERT INTO {LINKS} (id, driver_id, expires_at) VALUES (:link, :owner, now() + interval '1 hour')
+        """), {"link": link, "owner": original["accountId"]})
+
+    path = ACCOUNT + "/links/" + str(link)
+    for _ in range(2):
+        _, linked = session(subject=subject)
+        assert client.get(ACCOUNT, headers=linked).json() == profile
+        assert client.get(path, headers=linked).json()["accountId"] == original["accountId"]
+
+    _, other = session(claims={"role": "staff"})
+    account = client.get(ACCOUNT, headers=other).json()
+    assert account["registeredEmail"] == original["registeredEmail"]
+    assert account["accountId"] != original["accountId"]
+    assert account["acceptedVersion"] is None
+    assert client.get(ACCOUNT + "/workspace", headers=other).status_code == 403
+    assert client.put(ACCOUNT + "/controlled-use", headers=other, json=consent).status_code == 200
+    assert client.get(path, headers=other).status_code == 404
+
+
 def sign_delivery(subject, event_type, revision, *, instance=CLERK_INSTANCE, banned=False):
     event_id = "msg_" + uuid4().hex
     when = datetime.now(timezone.utc)

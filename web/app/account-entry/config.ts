@@ -1,4 +1,5 @@
 import 'server-only';
+import { headers } from 'next/headers';
 
 export function accountEntryEnabled() {
   return process.env.RAFIQ_ACCOUNT_ENTRY === 'true';
@@ -9,6 +10,22 @@ export function signupOpen() {
     && process.env.RAFIQ_SIGNUP_MODE === 'test-open'
     && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.startsWith('pk_test_') === true
     && process.env.CLERK_SECRET_KEY?.startsWith('sk_test_') === true;
+}
+
+export async function googleEntryOrigin(): Promise<string | undefined> {
+  const origin = process.env.RAFIQ_WEB_ORIGIN;
+  if (!accountEntryEnabled() || process.env.RAFIQ_GOOGLE_SIGN_IN !== 'true' || !origin) return;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return;
+  }
+  const developmentLoopback = url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname)
+    && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.startsWith('pk_test_')
+    && process.env.CLERK_SECRET_KEY?.startsWith('sk_test_');
+  if (url.origin === origin && (url.protocol === 'https:' || developmentLoopback)
+      && (await headers()).get('host') === url.host) return origin;
 }
 
 export function profileIdentityEnabled() {

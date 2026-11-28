@@ -1,14 +1,15 @@
 import { auth } from '@clerk/nextjs/server';
 import { notFound, redirect } from 'next/navigation';
 import { connection } from 'next/server';
-import { accountEntryEnabled, publishedSupportContact, signupOpen } from '../../account-entry/config';
+import { accountEntryEnabled, googleEntryOrigin, publishedSupportContact, signupOpen } from '../../account-entry/config';
+import { googleResult } from '../../account-entry/google-return';
 import { accountPath, entryContext } from '../../account-entry/return';
 import { EntryIdentity, EntryShell } from '../../account-entry/shell';
 import { DriverAccess } from '../driver-access';
 
 type Props = {
   params: Promise<{ step?: string[] }>;
-  searchParams: Promise<{ entry?: string | string[] }>;
+  searchParams: Promise<{ entry?: string | string[]; google?: string | string[] }>;
 };
 
 export async function generateMetadata({ params }: Props) {
@@ -22,14 +23,16 @@ export default async function SignInPage({ params, searchParams }: Props) {
   const { step } = await params;
   const recover = step?.length === 1 && step[0] === 'recover';
   if (step?.length && !recover) notFound();
-  const entry = entryContext((await searchParams).entry);
+  const query = await searchParams;
+  const entry = entryContext(query.entry);
   if ((await auth()).userId) redirect(accountPath(entry));
+  const googleOrigin = recover ? undefined : await googleEntryOrigin();
 
   return (
     <EntryIdentity>
       <EntryShell artwork>
         <DriverAccess key={recover ? 'recover' : 'sign-in'} entry={entry} recover={recover} registrationOpen={signupOpen()}
-          supportContact={publishedSupportContact()} />
+          supportContact={publishedSupportContact()} googleOrigin={googleOrigin} googleReturn={googleResult(query.google)} />
       </EntryShell>
     </EntryIdentity>
   );
