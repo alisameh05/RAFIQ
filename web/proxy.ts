@@ -1,10 +1,18 @@
 import { clerkMiddleware } from '@clerk/nextjs/server';
 import { NextResponse, type NextFetchEvent, type NextRequest } from 'next/server';
 import { accountEntryEnabled, signupOpen } from './app/account-entry/config';
+import { googleCallbackPath, googleReturnPath } from './app/account-entry/google-return';
 
 const clerk = clerkMiddleware({ jwtKey: process.env.CLERK_JWT_KEY });
 
 export default function proxy(request: NextRequest, event: NextFetchEvent) {
+  if (accountEntryEnabled() && request.nextUrl.pathname === googleCallbackPath
+      && request.nextUrl.searchParams.has('__clerk_redirect_url')) {
+    // Google returns to this origin. Clerk's development satellite redirect has no role here.
+    const response = NextResponse.redirect(new URL(googleReturnPath(undefined, 'failed'), request.url));
+    response.headers.set('Cache-Control', 'no-store');
+    return response;
+  }
   const surface = request.nextUrl.pathname.split('/')[1];
   const usesClerk = accountEntryEnabled()
     ? surface === 'account' || surface === 'sign-in' || (surface === 'sign-up' && signupOpen())

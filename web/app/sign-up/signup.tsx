@@ -5,6 +5,7 @@ import { isClerkAPIResponseError } from '@clerk/nextjs/errors';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
+import { GoogleAction } from '../account-entry/google-action';
 
 type ClerkSignup = ReturnType<typeof useSignUp>['signUp'];
 type ProviderError = NonNullable<Awaited<ReturnType<ClerkSignup['password']>>['error']>;
@@ -13,15 +14,15 @@ type Feedback = { field: Field; message: string };
 type Focus = 'heading' | 'email' | 'password' | 'code' | 'change' | 'resend';
 const resendDelay = 30;
 
-export function Signup() {
+export function Signup({ googleOrigin }: { googleOrigin?: string }) {
   const { isLoaded, isSignedIn } = useAuth();
   const { signUp } = useSignUp();
   if (!isLoaded) return <><h1>Create an account</h1><p role="status">Loading secure signup…</p></>;
   if (isSignedIn) return <><h1>Continue to RAFIQ</h1><Link href="/account">Check account status</Link></>;
-  return <SignupForm signUp={signUp} />;
+  return <SignupForm signUp={signUp} googleOrigin={googleOrigin} />;
 }
 
-function SignupForm({ signUp }: { signUp: ClerkSignup }) {
+function SignupForm({ signUp, googleOrigin }: { signUp: ClerkSignup; googleOrigin?: string }) {
   const router = useRouter();
   const [address, setAddress] = useState(signUp.hasPassword && signUp.status !== 'complete' ? signUp.emailAddress : null);
   const [email, setEmail] = useState('');
@@ -32,6 +33,7 @@ function SignupForm({ signUp }: { signUp: ClerkSignup }) {
   const [expired, setExpired] = useState(() => signUp.verifications.emailAddress.status === 'expired');
   const [complete, setComplete] = useState(() => signUp.status === 'complete');
   const [pending, setPending] = useState('');
+  const [googlePending, setGooglePending] = useState(false);
   const [notice, setNotice] = useState('');
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [focus, setFocus] = useState<{ target: Focus } | null>(null);
@@ -127,6 +129,7 @@ function SignupForm({ signUp }: { signUp: ClerkSignup }) {
 
   function register(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (googlePending) return;
     const password = passwordInput.current?.value ?? '';
     if (passwordInput.current) passwordInput.current.value = '';
     void run('Creating account…', 'We couldn’t start signup. Enter your password to try again.', async () => {
@@ -204,7 +207,7 @@ function SignupForm({ signUp }: { signUp: ClerkSignup }) {
     });
   }
 
-  const disabled = Boolean(pending);
+  const disabled = Boolean(pending) || googlePending;
   const resendFirst = needsCode || expired;
   const errorFor = (field: Field) => feedback?.field === field;
   const errorText = feedback && <p id="signup-error" className="entry-error" role="alert">{feedback.message}</p>;
@@ -301,6 +304,7 @@ function SignupForm({ signUp }: { signUp: ClerkSignup }) {
               <button className="entry-action" disabled={disabled || Boolean(cooldown)}>Create account</button>
             </div>
           </form>
+          {googleOrigin && <GoogleAction origin={googleOrigin} busy={disabled} onPending={setGooglePending} />}
         </>
       )}
       {!complete && <p>Already have an account? <Link href="/sign-in">Sign in</Link></p>}

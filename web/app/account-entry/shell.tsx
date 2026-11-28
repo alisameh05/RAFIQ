@@ -23,6 +23,7 @@ export function EntryShell({ children, artwork = false }: { children: ReactNode;
 }
 
 
-export function EntryIdentity({ children }: { children: ReactNode }) {
-  return <ClerkProvider signInUrl="/sign-in" signInFallbackRedirectUrl="/account">{children}</ClerkProvider>;
+export function EntryIdentity({ children, redirectOrigin }: { children: ReactNode; redirectOrigin?: string }) {
+  return <ClerkProvider signInUrl="/sign-in" signInFallbackRedirectUrl="/account"
+    allowedRedirectOrigins={redirectOrigin ? [redirectOrigin] : undefined}>{children}</ClerkProvider>;
 }
