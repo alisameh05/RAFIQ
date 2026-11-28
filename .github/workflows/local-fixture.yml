@@ -59,6 +59,21 @@ jobs:
           path: web/test-results/google-*/**/google-p0*.png
           if-no-files-found: error
           retention-days: 14
+      - name: Verify Apple entry and linking with signup open, held and Apple off
+        working-directory: web
+        env:
+          RAFIQ_LANDING_LOCAL: '1'
+        run: |
+          for mode in open held off; do
+            RAFIQ_APPLE_FIXTURE="$mode" npm run test:e2e -- apple-entry.spec.ts --output="test-results/apple-$mode" || exit $?
+          done
+      - name: Upload synthetic Apple entry browser evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: synthetic-apple-entry-browser
+          path: web/test-results/apple-*/**/apple-*.png
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload synthetic monitoring settings evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

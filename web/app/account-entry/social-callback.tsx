@@ -4,13 +4,13 @@ import { useAuth, useClerk } from '@clerk/nextjs';
 import { isClerkAPIResponseError } from '@clerk/nextjs/errors';
 import Link from 'next/link';
 import { useEffect, useRef } from 'react';
-import { googleAttemptKey, googleReturnPath, type GoogleResult } from '../../../account-entry/google-return';
-import { accountPath, type EntryContext } from '../../../account-entry/return';
+import { consumeSocialAttempt } from './social-attempt';
+import { socialAttemptKey, socialNames, socialReturnPath, type SocialProvider, type SocialResult } from './social-return';
+import { accountPath, type EntryContext } from './return';
 
-type Props = { origin: string; attempt: string; entry: EntryContext; signupOpen: boolean; cancelled: boolean };
-const attemptLifetime = 15 * 60 * 1000;
+type Props = { provider: SocialProvider; origin: string; attempt: string; entry: EntryContext; signupOpen: boolean; cancelled: boolean };
 
-function providerResult(code: string | undefined): GoogleResult | undefined {
+function providerResult(code: string | undefined): SocialResult | undefined {
   switch (code) {
     case 'oauth_access_denied':
       return 'cancelled';
@@ -23,16 +23,16 @@ function providerResult(code: string | undefined): GoogleResult | undefined {
   }
 }
 
-export function GoogleCallback({ origin, attempt, entry, signupOpen, cancelled }: Props) {
+export function SocialCallback({ provider, origin, attempt, entry, signupOpen, cancelled }: Props) {
   const clerk = useClerk();
   const { isLoaded } = useAuth();
   const handled = useRef(false);
-  const fallback = googleReturnPath(entry, 'failed');
+  const fallback = socialReturnPath(provider, entry, 'failed');
 
   useEffect(() => {
     if (!isLoaded || handled.current) return;
     handled.current = true;
-    const returnToSignIn = (result: GoogleResult) => window.location.replace(googleReturnPath(entry, result));
+    const returnToSignIn = (result: SocialResult) => window.location.replace(socialReturnPath(provider, entry, result));
     const failure = () => {
       const signIn = clerk.client?.signIn;
       const result = providerResult(signIn?.firstFactorVerification.error?.code);
@@ -51,12 +51,10 @@ export function GoogleCallback({ origin, attempt, entry, signupOpen, cancelled }
         if (window.location.origin !== origin) return returnToSignIn('unavailable');
         const query = new URLSearchParams({ attempt });
         if (entry) query.set('entry', entry);
-        const submitted = JSON.parse(sessionStorage.getItem(googleAttemptKey) ?? 'null');
-        const age = Date.now() - (submitted?.startedAt ?? 0);
-        if (submitted?.query !== query.toString() || !(age >= 0 && age <= attemptLifetime)) {
-          return returnToSignIn('failed');
-        }
-        sessionStorage.removeItem(googleAttemptKey);
+        const submitted = consumeSocialAttempt<{ query: string; signInId: string; startedAt: number }>(
+          socialAttemptKey(provider), (saved) => saved.query === query.toString(),
+        );
+        if (!submitted) return returnToSignIn('failed');
         if (cancelled) return returnToSignIn('cancelled');
 
         const signIn = clerk.client?.signIn;
@@ -86,11 +84,11 @@ export function GoogleCallback({ origin, attempt, entry, signupOpen, cancelled }
       }
     }
     void finish();
-  }, [attempt, cancelled, clerk, entry, fallback, isLoaded, origin, signupOpen]);
+  }, [attempt, cancelled, clerk, entry, fallback, isLoaded, origin, provider, signupOpen]);
 
   return <>
-    <h1>Continue with Google</h1>
-    <p role="status">Finishing Google sign-in…</p>
+    <h1>Continue with {socialNames[provider]}</h1>
+    <p role="status">Finishing {socialNames[provider]} sign-in…</p>
     <Link className="entry-action entry-secondary" href={fallback}>Return to sign in</Link>
   </>;
 }

@@ -1,15 +1,15 @@
 import { auth } from '@clerk/nextjs/server';
 import { notFound, redirect } from 'next/navigation';
 import { connection } from 'next/server';
-import { accountEntryEnabled, googleEntryOrigin, publishedSupportContact, signupOpen } from '../../account-entry/config';
-import { googleResult } from '../../account-entry/google-return';
+import { accountEntryEnabled, socialEntryOrigin, publishedSupportContact, signupOpen } from '../../account-entry/config';
+import { socialResult } from '../../account-entry/social-return';
 import { accountPath, entryContext } from '../../account-entry/return';
 import { EntryIdentity, EntryShell } from '../../account-entry/shell';
 import { DriverAccess } from '../driver-access';
 
 type Props = {
   params: Promise<{ step?: string[] }>;
-  searchParams: Promise<{ entry?: string | string[]; google?: string | string[] }>;
+  searchParams: Promise<{ entry?: string | string[]; google?: string | string[]; apple?: string | string[] }>;
 };
 
 export async function generateMetadata({ params }: Props) {
@@ -26,13 +26,14 @@ export default async function SignInPage({ params, searchParams }: Props) {
   const query = await searchParams;
   const entry = entryContext(query.entry);
   if ((await auth()).userId) redirect(accountPath(entry));
-  const googleOrigin = recover ? undefined : await googleEntryOrigin();
+  const [googleOrigin, appleOrigin] = recover ? [] : await Promise.all([socialEntryOrigin('google'), socialEntryOrigin('apple')]);
 
   return (
     <EntryIdentity>
       <EntryShell artwork>
         <DriverAccess key={recover ? 'recover' : 'sign-in'} entry={entry} recover={recover} registrationOpen={signupOpen()}
-          supportContact={publishedSupportContact()} googleOrigin={googleOrigin} googleReturn={googleResult(query.google)} />
+          supportContact={publishedSupportContact()} googleOrigin={googleOrigin} googleReturn={socialResult(query.google)}
+          appleOrigin={appleOrigin} appleReturn={socialResult(query.apple)} />
       </EntryShell>
     </EntryIdentity>
   );

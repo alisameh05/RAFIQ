@@ -7,6 +7,7 @@ import { accountPath, privateDestination, privatePath, privateTitles, signInPath
 import { RestrictedAccountMessage } from '../account-entry/restricted-account';
 import { VerifyEmail } from '../account-entry/verify-email';
 import { hasPendingSignOut, listenForPrivateAccess, notifyPrivateAccess, rememberPendingSignOut, setPendingSignOut } from './private-access';
+import type { AppleLinkResult } from '../account-entry/apple-link-return';
 import { DriverProfile, type ProfileAccount } from './driver-profile';
 import { DriverNavigation, SettingsLayout } from './settings-layout';
 import { parseRecordingConsent, RecordingRevisionConflict, type RecordingChange } from './recording-consent';
@@ -29,6 +30,8 @@ type GateProps = {
   destination?: PrivateDestination;
   linkId?: string;
   identityManagementEnabled: boolean;
+  appleOrigin?: string;
+  appleLinkResult?: AppleLinkResult;
 };
 
 function isSettingsEntry(view: View) {
@@ -89,7 +92,7 @@ export function AccountGate(props: GateProps) {
     {...props} userId={userId} sessionId={sessionId} />;
 }
 
-function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId, identityManagementEnabled }: GateProps & {
+function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId, identityManagementEnabled, appleOrigin, appleLinkResult }: GateProps & {
   userId: string;
   sessionId: string;
 }) {
@@ -136,8 +139,9 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   }, [view, attempt]);
 
   useEffect(() => {
+    if (view === 'profile' && appleLinkResult && panel.current?.contains(document.activeElement)) return;
     if (view !== 'checking') heading.current?.focus();
-  }, [view, conditions?.version]);
+  }, [view, conditions?.version, appleLinkResult]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -590,7 +594,8 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         <DriverProfile account={profile} requestProfile={requestProfile} signOut={() => void exit('/')}
           draftValue={profileDraft?.accountId === profile.accountId ? profileDraft.value : undefined}
           changeDraft={(value) => setProfileDraft(value === undefined ? null : { accountId: profile.accountId, value })}
-          canManageIdentity={identityManagementEnabled && user?.deleteSelfEnabled === false} />
+          canManageIdentity={identityManagementEnabled && user?.deleteSelfEnabled === false}
+          appleOrigin={appleOrigin} appleLinkResult={appleLinkResult} />
       </SettingsLayout>
     </div>;
   }

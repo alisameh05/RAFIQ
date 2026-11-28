@@ -2,13 +2,14 @@
 
 import { useClerk } from '@clerk/nextjs';
 import { useEffect, useRef, useState } from 'react';
-import { googleAttemptKey, googleCallbackPath, googleFeedback, type GoogleResult } from './google-return';
+import { socialAttemptKey, socialCallbackPath, socialFeedback, socialNames, type SocialProvider, type SocialResult } from './social-return';
 import { accountPath, type EntryContext } from './return';
 
-export function GoogleAction({ origin, entry, result, busy, onPending }: {
+export function SocialAction({ provider, origin, entry, result, busy, onPending }: {
+  provider: SocialProvider;
   origin?: string;
   entry?: EntryContext;
-  result?: GoogleResult;
+  result?: SocialResult;
   busy: boolean;
   onPending: (pending: boolean) => void;
 }) {
@@ -18,7 +19,9 @@ export function GoogleAction({ origin, entry, result, busy, onPending }: {
   const returned = useRef<HTMLParagraphElement>(null);
   const starting = useRef(false);
   const [showReturn, setShowReturn] = useState(true);
-  const feedback = error ? googleFeedback.failed : showReturn && result ? googleFeedback[result] : undefined;
+  const name = socialNames[provider];
+  const feedbackId = provider + '-feedback';
+  const feedback = error ? socialFeedback(provider, 'failed') : showReturn && result ? socialFeedback(provider, result) : undefined;
 
   useEffect(() => {
     if (result) returned.current?.focus();
@@ -43,26 +46,26 @@ export function GoogleAction({ origin, entry, result, busy, onPending }: {
     setShowReturn(false);
     setError(false);
     try {
-      if (window.location.origin !== origin || !clerk.client) throw new Error('Google sign-in unavailable');
+      if (window.location.origin !== origin || !clerk.client) throw new Error('Social sign-in unavailable');
       const attempt = crypto.randomUUID();
       const query = new URLSearchParams({ attempt });
       if (entry) query.set('entry', entry);
       const signIn = await clerk.client.signIn.create({
-        strategy: 'oauth_google',
-        redirectUrl: clerk.buildUrlWithAuth(origin + googleCallbackPath + '?' + query),
+        strategy: `oauth_${provider}`,
+        redirectUrl: clerk.buildUrlWithAuth(origin + socialCallbackPath(provider) + '?' + query),
         actionCompleteRedirectUrl: origin + accountPath(entry),
       });
       const verification = signIn.firstFactorVerification;
       if (!signIn.id || verification.status !== 'unverified' || !verification.externalVerificationRedirectURL) {
-        throw new Error('Google sign-in did not start');
+        throw new Error('Social sign-in did not start');
       }
-      sessionStorage.setItem(googleAttemptKey, JSON.stringify({
+      sessionStorage.setItem(socialAttemptKey(provider), JSON.stringify({
         query: query.toString(), signInId: signIn.id, startedAt: Date.now(),
       }));
       window.location.assign(verification.externalVerificationRedirectURL);
     } catch {
       try {
-        sessionStorage.removeItem(googleAttemptKey);
+        sessionStorage.removeItem(socialAttemptKey(provider));
       } catch {
         // The browser may have blocked access to storage before the attempt started.
       }
@@ -74,13 +77,13 @@ export function GoogleAction({ origin, entry, result, busy, onPending }: {
   }
 
   return <>
-    {feedback && <p ref={returned} id="google-feedback" className="entry-notice" role="alert" tabIndex={-1}>{feedback}</p>}
+    {feedback && <p ref={returned} id={feedbackId} className="entry-notice" role="alert" tabIndex={-1}>{feedback}</p>}
     {origin && <div className="entry-actions">
       <button className="entry-action entry-secondary" type="button" aria-disabled={busy || pending}
-        aria-describedby={feedback ? 'google-feedback' : undefined} onClick={() => void start()}>
-        Continue with Google
+        aria-describedby={feedback ? feedbackId : undefined} onClick={() => void start()}>
+        Continue with {name}
       </button>
     </div>}
-    {origin && <p className="entry-status" role="status">{pending && 'Opening Google sign-in…'}</p>}
+    {origin && <p className="entry-status" role="status">{pending && `Opening ${name} sign-in…`}</p>}
   </>;
 }
