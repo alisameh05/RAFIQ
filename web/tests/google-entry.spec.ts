@@ -204,6 +204,14 @@ test('a direct Google return without an attempt goes safely to P04', async ({ re
   }
 });
 
+test('the callback rejects an unrelated Clerk routing parameter before processing the return', async ({ request }) => {
+  const response = await request.get(origin + '/sign-in/google/callback?' + new URLSearchParams({
+    __clerk_redirect_url: '/account',
+  }), { maxRedirects: 0 });
+  expect(response.status()).toBe(307);
+  expect(new URL(response.headers().location, origin).href).toBe(origin + '/sign-in?google=failed');
+});
+
 test('P02 and P04 show Google only where enabled and preserve email entry', async ({ page }, info) => {
   await googleFixture(page);
   await page.setViewportSize({ width: 320, height: 790 });
