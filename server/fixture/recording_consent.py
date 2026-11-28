@@ -1,15 +1,32 @@
 """M04 owner-scoped recording decision and withdrawal fence."""
 
-from typing import Annotated, Literal
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-# Phase 1 baseline from the API Behavior catalog and PRD §8.3. Reaching requires qualification.
-Behavior = Literal["drowsiness", "distraction", "phoneUse", "eating", "drinking"]
+Behavior = Annotated[str, Field(pattern=r"^[a-z][a-zA-Z0-9]{0,39}$")]
 Seconds = Annotated[int, Field(ge=0, le=5)]
+
+
+class RecordingCatalog(BaseModel):
+    version: str
+    behaviors: dict[Behavior, str]
+
+
+# Published Phase 1 fixture catalog. Live categories have independent PRD §8.3 qualification.
+RECORDING_CATALOG = RecordingCatalog(
+    version="phase-1-fixture-1",
+    behaviors={
+        "drowsiness": "Drowsiness",
+        "distraction": "Distraction",
+        "phoneUse": "Phone use",
+        "eating": "Eating",
+        "drinking": "Drinking",
+    },
+)
 
 
 class RecordingSettings(BaseModel):
@@ -38,9 +55,14 @@ class RecordingChange(BaseModel):
 class RecordingConsent(BaseModel):
     revision: str
     settings: RecordingSettings
+    catalog: RecordingCatalog = RECORDING_CATALOG
 
 
 class RecordingConflict(Exception):
+    pass
+
+
+class RecordingCategoryUnavailable(Exception):
     pass
 
 
@@ -67,6 +89,10 @@ def recording_consent(
         return RecordingConsent(revision=revision_token(revision), settings=settings)
     if change.expectedRevision != revision_token(revision):
         raise RecordingConflict()
+
+    unqualified = set(change.settings.behaviors) - RECORDING_CATALOG.behaviors.keys()
+    if unqualified and (change.settings.enabled or change.settings.behaviors != settings.behaviors):
+        raise RecordingCategoryUnavailable()
 
     revision += 1
     connection.execute(text("""

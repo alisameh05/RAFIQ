@@ -214,7 +214,8 @@ function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft, r
   const dirty = Boolean(confirmed && draft && !samePreferences(confirmed, draft));
   const saving = saveState === 'saving' || recording.saveState === 'saving';
   const recordingReady = recording.dirty && !recording.review && recording.load === 'ready';
-  const canSave = !saving && !(dirty && rechecking) && (dirty || recordingReady);
+  const preferencesReady = dirty && !rechecking;
+  const canSave = !saving && (preferencesReady || recordingReady);
 
   useEffect(() => () => pending.current?.abort(), []);
 
@@ -229,7 +230,7 @@ function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft, r
   function save(event?: FormEvent<HTMLFormElement>, confirmOptIn = false) {
     event?.preventDefault();
     if (!canSave || pending.current) return;
-    if (draftMissing) {
+    if (preferencesReady && draftMissing && !recordingReady) {
       setFieldError(true);
       cameraInput.current?.focus();
       return;
@@ -239,7 +240,10 @@ function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft, r
       confirmation.current?.showModal();
       return;
     }
-    if (dirty && draft) void savePreferences(draft);
+    if (preferencesReady && draft) {
+      if (draftMissing) setFieldError(true);
+      else void savePreferences(draft);
+    }
     if (recordingReady) void recording.save();
   }
 

@@ -28,7 +28,9 @@ from fixture.database import (
     engine_for, schema_ready, schema_revision,
 )
 from fixture.identity import https_origin, session_claims, verification_key
-from fixture.recording_consent import RecordingChange, RecordingConflict, RecordingConsent, recording_consent
+from fixture.recording_consent import (
+    RecordingCategoryUnavailable, RecordingChange, RecordingConflict, RecordingConsent, recording_consent,
+)
 
 SESSION = re.compile(r"sess_[A-Za-z0-9]{1,128}")
 CLERK_API = "https://api.clerk.com/v1/"
@@ -416,6 +418,11 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
                 return recording_consent(connection, row["id"], change)
             except RecordingConflict:
                 raise AccountProblem(409, "recording_consent_changed", "Recording consent changed") from None
+            except RecordingCategoryUnavailable:
+                raise AccountProblem(
+                    422, "validation_failed", "Check the recording categories",
+                    field_errors=[{"pointer": "/settings/behaviors", "code": "invalid"}],
+                ) from None
 
     @app.get("/api/v1/recording-consent", operation_id="getRecordingConsent", response_model=RecordingConsent)
     def get_recording_consent(request: Request, authorization: Annotated[str | None, Header()] = None):

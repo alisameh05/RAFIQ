@@ -5,9 +5,8 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { privatePath } from '../account-entry/return';
 import {
   acknowledgeRecordingWithdrawal, beginRecordingWithdrawal, defaultClipPreferences, pendingRecordingWithdrawal,
-  recordingBehaviors, RecordingRevisionConflict, recordingSnapshotForSession, sameClipPreferences,
-  subscribeToRecordingWithdrawal,
-  type ClipPreferences, type RecordingBehavior, type RecordingConsent, type RequestRecordingConsent,
+  RecordingRevisionConflict, recordingSnapshotForSession, sameClipPreferences, subscribeToRecordingWithdrawal,
+  type ClipPreferences, type RecordingConsent, type RequestRecordingConsent,
 } from './recording-consent';
 
 type ConsentSource = { accountId: string; request: RequestRecordingConsent };
@@ -25,6 +24,13 @@ export function useRecordingSettings({ accountId, request }: ConsentSource, resu
   const [unconfirmedEnable, setUnconfirmedEnable] = useState(false);
   const active = useRef<AbortController | null>(null);
   const localWithdrawal = useRef(false);
+  const behaviorLabels = current?.catalog.behaviors ?? {};
+  const values = draft ?? current?.settings ?? defaultClipPreferences;
+  const preferences = { ...values, behaviors: values.behaviors.filter((code) => Object.hasOwn(behaviorLabels, code)) };
+  const allowed = load === 'ready' && !withdrawalPending && Boolean(recordingSnapshotForSession(accountId, current));
+  const enabled = allowed || optIn;
+  const dirty = Boolean(current && !withdrawalPending && (optIn || (current.settings.enabled &&
+    draft && !sameClipPreferences(draft, current.settings))));
 
   function replaceOperation() {
     active.current?.abort();
@@ -33,12 +39,14 @@ export function useRecordingSettings({ accountId, request }: ConsentSource, resu
     return controller;
   }
 
-  async function read() {
+  async function read(checkDraft = true) {
     const controller = replaceOperation();
     setLoad('loading');
     try {
       const consent = await request(controller.signal);
       if (controller.signal.aborted) return;
+      if (checkDraft && dirty &&
+          (current?.revision !== consent.revision || current.catalog.version !== consent.catalog.version)) setReview(true);
       setCurrent(consent);
       setLoad('ready');
     } catch {
@@ -54,14 +62,14 @@ export function useRecordingSettings({ accountId, request }: ConsentSource, resu
 
   const syncWithdrawal = useEffectEvent(() => {
     const pending = Boolean(pendingRecordingWithdrawal(accountId));
-    setWithdrawalPending(pending);
     if (localWithdrawal.current) return;
+    setWithdrawalPending(pending);
     setOptIn(false);
     setDraft(undefined);
     setReview(false);
     setUnconfirmedEnable(false);
     setSaveState('idle');
-    void read();
+    void read(false);
   });
 
   useEffect(() => {
@@ -76,12 +84,6 @@ export function useRecordingSettings({ accountId, request }: ConsentSource, resu
   useEffect(() => {
     refresh();
   }, [resume]);
-
-  const preferences = draft ?? current?.settings ?? defaultClipPreferences;
-  const allowed = load === 'ready' && !withdrawalPending && Boolean(recordingSnapshotForSession(accountId, current));
-  const enabled = allowed || optIn;
-  const dirty = Boolean(current && !withdrawalPending && (optIn || (current.settings.enabled &&
-    draft && !sameClipPreferences(draft, current.settings))));
 
   function update(patch: Partial<ClipPreferences>) {
     setDraft({ ...preferences, ...patch });
@@ -151,6 +153,7 @@ export function useRecordingSettings({ accountId, request }: ConsentSource, resu
       return confirmed;
     }
 
+    let acknowledged = false;
     try {
       const consent = current ?? await request(signal);
       let confirmed: RecordingConsent;
@@ -160,11 +163,12 @@ export function useRecordingSettings({ accountId, request }: ConsentSource, resu
         if (!(error instanceof RecordingRevisionConflict)) throw error;
         confirmed = await submit(await request(signal));
       }
-      if (signal.aborted || pendingRecordingWithdrawal(accountId) !== marker) return;
+      if (signal.aborted || !acknowledgeRecordingWithdrawal(accountId, marker) ||
+          pendingRecordingWithdrawal(accountId)) return;
       onConfirmed();
       setCurrent(confirmed);
       setLoad('ready');
-      acknowledgeRecordingWithdrawal(accountId, marker);
+      acknowledged = true;
       setWithdrawalPending(false);
     } catch {
       // Keep the local stop until the account acknowledges withdrawal.
@@ -173,12 +177,17 @@ export function useRecordingSettings({ accountId, request }: ConsentSource, resu
       if (active.current === controller) {
         active.current = null;
         setWithdrawing(false);
+        // A newer tab can complete withdrawal while this request is still in flight.
+        if (!signal.aborted && !acknowledged && !pendingRecordingWithdrawal(accountId)) {
+          setWithdrawalPending(false);
+          void read(false);
+        }
       }
     }
   }
 
   return {
-    current, load, allowed, preferences, optIn, enabled, dirty, review, saveState,
+    current, load, allowed, behaviorLabels, preferences, optIn, enabled, dirty, review, saveState,
     withdrawalPending, withdrawing, unconfirmedEnable, retry: read, save, update, chooseOptIn, withdraw,
     acceptReview: () => setReview(false),
   };
@@ -224,7 +233,7 @@ export function RecordingControls({ editor, saving, focusSave }: {
 }) {
   const disabled = saving || !editor.enabled || editor.load !== 'ready' || editor.withdrawalPending;
   const { preferences } = editor;
-  function toggle(behavior: RecordingBehavior, checked: boolean) {
+  function toggle(behavior: string, checked: boolean) {
     editor.update({ behaviors: checked ? [...preferences.behaviors, behavior]
       : preferences.behaviors.filter((selected) => selected !== behavior) });
   }
@@ -241,7 +250,7 @@ export function RecordingControls({ editor, saving, focusSave }: {
     {!editor.enabled && <p>Choose to allow recording to edit categories and context.</p>}
     <fieldset className="monitoring-visibility" disabled={disabled} aria-describedby="recording-empty-help">
       <legend>Behaviors to record</legend>
-      {(Object.entries(recordingBehaviors) as [RecordingBehavior, string][]).map(([behavior, label]) =>
+      {Object.entries(editor.behaviorLabels).map(([behavior, label]) =>
         <label key={behavior} className="monitoring-choice">
           <input type="checkbox" checked={preferences.behaviors.includes(behavior)}
             onChange={(event) => toggle(behavior, event.target.checked)} /> {label}
@@ -271,7 +280,8 @@ export function RecordingControls({ editor, saving, focusSave }: {
     {editor.review && <div>
       <p role="alert">Recording consent changed. Review the current settings and your draft before saving again.</p>
       {editor.load === 'ready' && editor.current && <>
-        <p>Current categories: {editor.current.settings.behaviors.map((key) => recordingBehaviors[key]).join(', ') || 'None'}.
+        <p>Current categories: {editor.current.settings.behaviors.flatMap((key) =>
+          Object.hasOwn(editor.behaviorLabels, key) ? [editor.behaviorLabels[key]] : []).join(', ') || 'None'}.
           {' '}Current context: {durationLabel(editor.current.settings.preSeconds)} before and {durationLabel(editor.current.settings.postSeconds)} after.</p>
         <button className="entry-action entry-secondary" type="button" onClick={() => {
           editor.acceptReview();

@@ -502,6 +502,13 @@ def test_recording_consent_defaults_replay_and_withdrawal_fence(accounts, publis
     assert initial.headers["cache-control"] == "private, no-store"
     default = {"enabled": False, "behaviors": [], "preSeconds": 3, "postSeconds": 3}
     assert initial.json()["settings"] == default
+    assert initial.json()["catalog"] == {
+        "version": "phase-1-fixture-1",
+        "behaviors": {
+            "drowsiness": "Drowsiness", "distraction": "Distraction", "phoneUse": "Phone use",
+            "eating": "Eating", "drinking": "Drinking",
+        },
+    }
 
     def change(revision, settings):
         return client.put(path, headers=headers, json={"expectedRevision": revision, "settings": settings})

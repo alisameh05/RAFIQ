@@ -1,15 +1,7 @@
-export const recordingBehaviors = {
-  drowsiness: 'Drowsiness',
-  distraction: 'Distraction',
-  phoneUse: 'Phone use',
-  eating: 'Eating',
-  drinking: 'Drinking',
-} as const;
-
-export type RecordingBehavior = keyof typeof recordingBehaviors;
-export type ClipPreferences = { behaviors: RecordingBehavior[]; preSeconds: number; postSeconds: number };
+export type ClipPreferences = { behaviors: string[]; preSeconds: number; postSeconds: number };
 export type RecordingSettings = ClipPreferences & { enabled: boolean };
-export type RecordingConsent = { revision: string; settings: RecordingSettings };
+export type RecordingCatalog = { version: string; behaviors: Record<string, string> };
+export type RecordingConsent = { revision: string; settings: RecordingSettings; catalog: RecordingCatalog };
 export type RecordingChange = { expectedRevision: string; settings: RecordingSettings };
 export type RequestRecordingConsent = (signal: AbortSignal, change?: RecordingChange) => Promise<RecordingConsent>;
 
@@ -19,17 +11,29 @@ export const defaultClipPreferences: ClipPreferences = { behaviors: [], preSecon
 
 export function parseRecordingConsent(value: unknown): RecordingConsent {
   if (!value || typeof value !== 'object') throw new Error('Invalid recording consent');
-  const { revision, settings } = value as { revision: unknown; settings: unknown };
+  const { revision, settings, catalog } = value as Record<string, unknown>;
   if (typeof revision !== 'string' || !revision || revision.length > 64 || !settings || typeof settings !== 'object') {
     throw new Error('Invalid recording consent');
+  }
+  if (!catalog || typeof catalog !== 'object') throw new Error('Invalid recording catalog');
+  const { version, behaviors: labels } = catalog as Record<string, unknown>;
+  const isBehavior = (code: unknown): code is string =>
+    typeof code === 'string' && /^[a-z][a-zA-Z0-9]{0,39}$/.test(code);
+  if (typeof version !== 'string' || !version || version.length > 64 || !labels ||
+      typeof labels !== 'object' || Array.isArray(labels) || Object.keys(labels).length > 30 ||
+      !Object.entries(labels).every(([code, label]) => isBehavior(code) && typeof label === 'string' && label.length > 0)) {
+    throw new Error('Invalid recording catalog');
   }
   const { enabled, behaviors, preSeconds = 3, postSeconds = 3 } = settings as Record<string, unknown>;
   const isSeconds = (seconds: unknown): seconds is number =>
     typeof seconds === 'number' && Number.isInteger(seconds) && seconds >= 0 && seconds <= 5;
   if (typeof enabled !== 'boolean' || !Array.isArray(behaviors) || new Set(behaviors).size !== behaviors.length ||
-      !behaviors.every((key) => typeof key === 'string' && Object.hasOwn(recordingBehaviors, key)) ||
+      behaviors.length > 30 || !behaviors.every(isBehavior) ||
       !isSeconds(preSeconds) || !isSeconds(postSeconds)) throw new Error('Invalid recording settings');
-  return { revision, settings: { enabled, behaviors: behaviors as RecordingBehavior[], preSeconds, postSeconds } };
+  return {
+    revision, settings: { enabled, behaviors, preSeconds, postSeconds },
+    catalog: { version, behaviors: labels as RecordingCatalog['behaviors'] },
+  };
 }
 
 export function sameClipPreferences(a: ClipPreferences, b: ClipPreferences) {
@@ -38,20 +42,31 @@ export function sameClipPreferences(a: ClipPreferences, b: ClipPreferences) {
 }
 
 const withdrawalEvent = 'rafiq:recording-withdrawal';
-const withdrawalKey = (accountId: string) => 'rafiq:pending-recording-withdrawal:' + accountId;
+const withdrawalPrefix = (accountId: string) => 'rafiq:pending-recording-withdrawal:' + accountId + ':';
 const inMemoryWithdrawals = new Map<string, string>();
 
-export function pendingRecordingWithdrawal(accountId: string): string | null {
+function storedWithdrawalKeys(accountId: string) {
+  const prefix = withdrawalPrefix(accountId);
+  const keys: string[] = [];
+  for (let index = 0; index < localStorage.length; index++) {
+    const key = localStorage.key(index);
+    if (key?.startsWith(prefix)) keys.push(key);
+  }
+  return keys;
+}
+
+export function pendingRecordingWithdrawal(accountId: string) {
+  if (inMemoryWithdrawals.has(accountId)) return true;
   try {
-    return localStorage.getItem(withdrawalKey(accountId)) ?? inMemoryWithdrawals.get(accountId) ?? null;
+    return storedWithdrawalKeys(accountId).length > 0;
   } catch {
-    return inMemoryWithdrawals.get(accountId) ?? null;
+    return false;
   }
 }
 
 export function subscribeToRecordingWithdrawal(accountId: string, listener: () => void) {
   const storage = (event: StorageEvent) => {
-    if (event.key === withdrawalKey(accountId) || event.key === null) listener();
+    if (event.key === null || event.key.startsWith(withdrawalPrefix(accountId))) listener();
   };
   const local = (event: Event) => {
     if ((event as CustomEvent<string>).detail === accountId) listener();
@@ -65,9 +80,13 @@ export function subscribeToRecordingWithdrawal(accountId: string, listener: () =
 }
 
 export function beginRecordingWithdrawal(accountId: string) {
-  const marker = pendingRecordingWithdrawal(accountId) ?? crypto.randomUUID();
+  const marker = crypto.randomUUID();
   try {
-    localStorage.setItem(withdrawalKey(accountId), marker);
+    // Use distinct keys so an acknowledgment from another tab cannot remove this stop.
+    const previous = storedWithdrawalKeys(accountId);
+    localStorage.setItem(withdrawalPrefix(accountId) + marker, 'pending');
+    inMemoryWithdrawals.delete(accountId);
+    for (const key of previous) localStorage.removeItem(key);
   } catch {
     inMemoryWithdrawals.set(accountId, marker);
   }
@@ -76,17 +95,25 @@ export function beginRecordingWithdrawal(accountId: string) {
 }
 
 export function acknowledgeRecordingWithdrawal(accountId: string, marker: string) {
-  if (pendingRecordingWithdrawal(accountId) !== marker) return;
+  const memory = inMemoryWithdrawals.get(accountId) === marker;
+  if (memory) inMemoryWithdrawals.delete(accountId);
   try {
-    localStorage.removeItem(withdrawalKey(accountId));
+    const key = withdrawalPrefix(accountId) + marker;
+    if (!memory && localStorage.getItem(key) === null) return false;
+    localStorage.removeItem(key);
   } catch {
-    // The in-memory stop still covers this page when browser storage is unavailable.
+    if (!memory) return false;
   }
-  inMemoryWithdrawals.delete(accountId);
   window.dispatchEvent(new CustomEvent(withdrawalEvent, { detail: accountId }));
+  return true;
 }
 
 /** Session scope comes from the current authorized account. Unknown intent fails closed. */
 export function recordingSnapshotForSession(accountId: string, consent: RecordingConsent | undefined) {
-  return consent?.settings.enabled && !pendingRecordingWithdrawal(accountId) ? consent : undefined;
+  if (!consent?.settings.enabled || pendingRecordingWithdrawal(accountId)) return undefined;
+  return {
+    ...consent, settings: {
+      ...consent.settings, behaviors: consent.settings.behaviors.filter((key) => Object.hasOwn(consent.catalog.behaviors, key)),
+    },
+  };
 }

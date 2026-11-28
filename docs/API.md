@@ -821,7 +821,7 @@ paths:
     get:
       operationId: "getRecordingConsent"
       tags: ["M04"]
-      description: "Return the driver’s effective recording decision and clip preferences. Declining completes the readiness decision."
+      description: "Return the driver’s effective recording decision, saved clip preferences, and the eligible category catalog for the current release. Declining completes the readiness decision."
       x-authority: "Verified eligible driver · current owner and action"
       responses:
         "200":
@@ -832,7 +832,7 @@ paths:
           content:
             "application/json":
               schema: {"$ref":"#/components/schemas/RecordingConsent"}
-              example: {"revision":"consent-1","settings":{"enabled":true,"behaviors":["drowsiness"],"preSeconds":3,"postSeconds":3}}
+              example: {"revision":"consent-1","settings":{"enabled":true,"behaviors":["drowsiness"],"preSeconds":3,"postSeconds":3},"catalog":{"version":"phase-1-fixture-1","behaviors":{"drowsiness":"Drowsiness"}}}
         "401": {"$ref":"#/components/responses/Http401"}
         "403": {"$ref":"#/components/responses/Http403"}
         "500": {"$ref":"#/components/responses/Http500"}
@@ -857,7 +857,7 @@ paths:
           content:
             "application/json":
               schema: {"$ref":"#/components/schemas/RecordingConsent"}
-              example: {"revision":"consent-1","settings":{"enabled":true,"behaviors":["drowsiness"],"preSeconds":3,"postSeconds":3}}
+              example: {"revision":"consent-2","settings":{"enabled":true,"behaviors":["drowsiness"],"preSeconds":3,"postSeconds":3},"catalog":{"version":"phase-1-fixture-1","behaviors":{"drowsiness":"Drowsiness"}}}
         "400": {"$ref":"#/components/responses/Http400"}
         "401": {"$ref":"#/components/responses/Http401"}
         "403": {"$ref":"#/components/responses/Http403"}
@@ -3836,11 +3836,23 @@ components:
           minimum: 0
           maximum: 5
           default: 3
+    RecordingCatalog:
+      type: "object"
+      additionalProperties: false
+      required: ["version","behaviors"]
+      properties:
+        version: {"type":"string","minLength":1,"maxLength":64}
+        behaviors:
+          type: "object"
+          description: "Eligible behavior codes and display labels for this published catalog version."
+          propertyNames: {"$ref":"#/components/schemas/Behavior"}
+          additionalProperties: {"type":"string","minLength":1}
+          maxProperties: 30
     RecordingConsent:
       type: "object"
       additionalProperties: false
-      required: ["revision","settings"]
-      properties: {"revision":{"type":"string","minLength":1,"maxLength":64},"settings":{"$ref":"#/components/schemas/RecordingSettings"}}
+      required: ["revision","settings","catalog"]
+      properties: {"revision":{"type":"string","minLength":1,"maxLength":64},"settings":{"$ref":"#/components/schemas/RecordingSettings"},"catalog":{"$ref":"#/components/schemas/RecordingCatalog"}}
     RecordingChange:
       type: "object"
       additionalProperties: false
