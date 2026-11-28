@@ -37,6 +37,21 @@ jobs:
         run: |
           npm run build
           npm run test:e2e -- landing.spec.ts driver-access.spec.ts controlled-use.spec.ts
+      - name: Verify the gated landing film and accessible media fallback
+        working-directory: web
+        env:
+          RAFIQ_LANDING_LOCAL: '1'
+        run: |
+          for mode in held no-video no-captions ready; do
+            RAFIQ_FILM_FIXTURE="$mode" npm run test:e2e -- landing-film.spec.ts --output="test-results/film-$mode" || exit $?
+          done
+      - name: Upload synthetic landing film browser evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: synthetic-landing-film-browser
+          path: web/test-results/film-*/**/film-*.png
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload synthetic profile browser evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
