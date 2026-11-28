@@ -1,6 +1,8 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { SampleEvidence } from './sample-evidence';
+import { LandingFilm } from './landing-film';
+import type { LandingFilmAssets } from './film-config';
 import { sampleEvents } from './sample-data';
 import './landing.css';
 
@@ -20,7 +22,7 @@ function EntryActions({ open, ending = false }: { open: boolean; ending?: boolea
   );
 }
 
-export function Landing({ signupOpen }: { signupOpen: boolean }) {
+export function Landing({ signupOpen, film }: { signupOpen: boolean; film?: LandingFilmAssets }) {
   const [warning, pause] = sampleEvents;
 
   return (
@@ -79,6 +81,7 @@ export function Landing({ signupOpen }: { signupOpen: boolean }) {
         </section>
 
         <SampleEvidence />
+        {film && <LandingFilm assets={film} />}
 
         <section className="landing-shell landing-ending" aria-labelledby="launch-title">
           <h2 id="launch-title">Your drive.<br />Your story.</h2>
