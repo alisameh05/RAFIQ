@@ -1,8 +1,21 @@
 import { sign } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
+import ts from 'typescript';
 
 const origin = process.env.RAFIQ_LANDING_PENDING_ORIGIN;
 const api = 'https://accounts.example.test/api/v1/account';
+const consentApi = 'https://accounts.example.test/api/v1/recording-consent';
+const offRecording = { enabled: false, behaviors: [] as string[], preSeconds: 3, postSeconds: 3 };
+const recordingCatalog = {
+  version: 'phase-1-fixture-1',
+  behaviors: { drowsiness: 'Drowsiness', distraction: 'Distraction', phoneUse: 'Phone use', eating: 'Eating', drinking: 'Drinking' },
+};
+
+function consentResponse(consent: { revision: string; settings: object }, catalog = recordingCatalog) {
+  return { ...consent, catalog };
+}
 const defaultPreferences = { cameraDeviceId: null as string | null, warningAudio: false, warningVisibility: 'default' };
 
 async function signInFixture(page: Page, driver: string, session = driver) {
@@ -20,6 +33,7 @@ async function signInFixture(page: Page, driver: string, session = driver) {
     { url: origin!, name: '__client_uat', value: String(now) },
   ]);
   await page.route('https://clerk.example.test/**', (route) => route.abort());
+  await page.route(consentApi, (route) => route.fulfill({ json: consentResponse({ revision: 'consent-0', settings: offRecording }) }));
   await page.addInitScript(({ userId, sessionId, token }) => {
     const authority = (userId: string, sessionId: string, token: string) => {
       const session = {
@@ -482,7 +496,8 @@ test('D19 retries a scoped read and save, validates and persists across reload a
   await page.getByRole('link', { name: 'Return to Profile' }).click();
   await page.locator('.profile-links').getByRole('link', { name: 'Privacy' }).click();
   await expect(page.getByRole('heading', { name: 'Privacy' })).toBeFocused();
-  await expect(page.getByText('Privacy controls are currently unavailable.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Incident recording' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Manage recording' })).toHaveAttribute('href', monitoringPath + '#incident-recording');
   await page.getByRole('link', { name: 'Return to Profile' }).click();
 
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
@@ -905,4 +920,329 @@ test('D20 discards a previous driver’s late save response when Clerk switches 
   await expect(page.getByRole('switch', { name: 'Warning audio' })).not.toBeChecked();
   await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toHaveCount(0);
   await expect(camera).toHaveValue(alternateCameraId);
+});
+
+
+test('D20 confirms video-only opt-in and D22 reads the acknowledged decision', async ({ page }) => {
+  await signInFixture(page, 'recordingA');
+  await installCameraFixture(page, 'granted');
+  await page.route(api + '**', (route) => route.fulfill({
+    json: route.request().url() === api ? profileFixture(null) : defaultPreferences,
+  }));
+  let stored = { revision: 'consent-0', settings: offRecording };
+  let reads = 0;
+  let writes = 0;
+  let releaseRead!: () => void;
+  const holdRead = new Promise<void>((resolve) => { releaseRead = resolve; });
+  let releaseWrite!: () => void;
+  const holdWrite = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  await page.route(consentApi, async (route) => {
+    if (route.request().method() === 'GET' && ++reads === 1) {
+      await holdRead;
+      return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+    }
+    if (route.request().method() === 'PUT') {
+      writes++;
+      const change = route.request().postDataJSON();
+      expect(change.expectedRevision).toBe(stored.revision);
+      if (writes === 1) {
+        expect(change.settings).toEqual({ enabled: true, behaviors: ['drowsiness', 'phoneUse'], preSeconds: 0, postSeconds: 5 });
+        await holdWrite;
+      }
+      stored = { revision: 'consent-' + writes, settings: change.settings };
+    }
+    return route.fulfill({ json: consentResponse(
+      writes ? stored : { revision: 'consent-0', settings: { enabled: false, behaviors: [] } },
+      { version: 'published-test-catalog', behaviors: { ...recordingCatalog.behaviors, phoneUse: 'Phone use (published)' } },
+    ) });
+  });
+
+  await page.goto(origin + monitoringPath);
+  const recording = page.getByRole('region', { name: 'Incident recording' });
+  await expect(recording.getByRole('status')).toHaveText('Checking recording consent…');
+  releaseRead();
+  await expect(recording.getByRole('status')).toHaveText('Couldn’t check recording status.');
+  await recording.getByRole('button', { name: 'Retry recording status' }).click();
+  await expect(recording.getByRole('status')).toHaveText('Recording off');
+  await expect(recording.getByText('Monitoring stays available with recording off.')).toBeVisible();
+  const before = recording.getByRole('combobox', { name: 'Before incident' });
+  const after = recording.getByRole('combobox', { name: 'After incident' });
+  await expect(before).toBeDisabled();
+  await expect(before).toHaveValue('3');
+  await expect(after).toHaveValue('3');
+  const optIn = recording.getByRole('checkbox', { name: 'Allow video-only incident clips' });
+  await optIn.focus();
+  await page.keyboard.press('Space');
+  await recording.getByRole('checkbox', { name: 'Drowsiness' }).check();
+  await recording.getByRole('checkbox', { name: 'Phone use (published)', exact: true }).check();
+  await expect(recording.getByRole('checkbox', { name: 'Reaching' })).toHaveCount(0);
+  await before.focus();
+  await page.keyboard.press('Home');
+  await expect(before).toHaveValue('0');
+  await after.selectOption('5');
+  await expect(recording.getByText(/30 seconds and 20 MB/)).toBeVisible();
+  await recording.getByText('How clips are saved').click();
+  await expect(recording.getByText(/Available first segment/)).toBeVisible();
+
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Allow video-only incident clips?' });
+  await save.click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(save).toBeFocused();
+  expect(writes).toBe(0);
+  await save.click();
+  await dialog.getByRole('button', { name: 'Confirm recording' }).click();
+  await expect.poll(() => writes).toBe(1);
+  await expect(recording.getByRole('status')).toHaveText('Recording off');
+  releaseWrite();
+  await expect(recording.getByRole('status')).toHaveText('Recording allowed');
+
+  await page.reload();
+  await expect(recording.getByRole('status')).toHaveText('Recording allowed');
+  await expect(before).toHaveValue('0');
+  await expect(after).toHaveValue('5');
+  await recording.getByRole('checkbox', { name: 'Drowsiness' }).uncheck();
+  await recording.getByRole('checkbox', { name: 'Phone use' }).uncheck();
+  await expect(recording.getByText(/no incidents match/)).toBeVisible();
+  await save.click();
+  await expect(page.getByText('Incident recording settings saved.')).toBeVisible();
+  expect(stored.settings.behaviors).toEqual([]);
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await recording.getByRole('link', { name: 'Privacy', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Privacy' })).toBeFocused();
+  const privacy = page.getByRole('region', { name: 'Incident recording' });
+  await expect(privacy.getByRole('status')).toHaveText('Allowed for selected incidents');
+  await expect(privacy.getByRole('button')).toHaveCount(0);
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 760 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  await page.setViewportSize({ width: 640, height: 760 });
+  await page.addStyleTag({ content: 'html { zoom: 200% }' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(640);
+  await privacy.getByRole('link', { name: 'Manage recording' }).click();
+  await expect(page).toHaveURL(origin + monitoringPath + '#incident-recording');
+  await expect(recording.getByRole('status')).toHaveText('Recording allowed');
+});
+
+test('D20 keeps failed drafts and requires review of a refreshed consent revision', async ({ page }) => {
+  await signInFixture(page, 'recordingB');
+  await installCameraFixture(page, 'granted');
+  let preferenceWrites = 0;
+  let general = defaultPreferences;
+  await page.route(api + '**', (route) => {
+    if (route.request().url() === api) return route.fulfill({ json: profileFixture(null) });
+    if (route.request().method() === 'PUT') {
+      preferenceWrites++;
+      general = route.request().postDataJSON();
+    }
+    return route.fulfill({ json: general });
+  });
+  let stored = { revision: 'consent-1', settings: { ...offRecording, enabled: true, behaviors: ['eating'] } };
+  let consentWrites = 0;
+  await page.route(consentApi, (route) => {
+    if (route.request().method() === 'PUT') {
+      const change = route.request().postDataJSON();
+      if (++consentWrites === 1) return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+      if (consentWrites === 2) {
+        stored = { revision: 'consent-2', settings: { ...stored.settings, preSeconds: 1 } };
+        return route.fulfill({ status: 409, json: { code: 'recording_consent_changed' } });
+      }
+      expect(change.expectedRevision).toBe('consent-2');
+      expect(change.settings).toEqual({ enabled: true, behaviors: ['eating', 'drinking'], preSeconds: 3, postSeconds: 3 });
+      stored = { revision: 'consent-3', settings: change.settings };
+    }
+    return route.fulfill({ json: consentResponse(stored) });
+  });
+  await page.goto(origin + monitoringPath);
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  await page.getByRole('switch', { name: 'Warning audio' }).check();
+  await page.getByRole('checkbox', { name: 'Drinking' }).check();
+  await save.click();
+  await expect(page.getByText('Monitoring preferences saved.')).toBeVisible();
+  await expect(page.getByText('Couldn’t save incident recording settings. Your changes are still here.')).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'Drinking' })).toBeChecked();
+  await save.click();
+  await expect(page.getByText(/Recording consent changed/)).toBeVisible();
+  await expect(page.getByText(/Current context: 1 second before/)).toBeVisible();
+  await expect(save).toBeDisabled();
+  await page.getByRole('button', { name: 'I reviewed the current settings and draft' }).click();
+  await expect(save).toBeFocused();
+  await save.click();
+  await expect(page.getByText('Incident recording settings saved.')).toBeVisible();
+  expect(preferenceWrites).toBe(1);
+
+  await page.getByRole('combobox', { name: 'Before incident' }).selectOption('2');
+  stored = { revision: 'consent-4', settings: { ...stored.settings, postSeconds: 5 } };
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  });
+  await expect(page.getByText(/Recording consent changed/)).toBeVisible();
+  await expect(page.getByText(/5 seconds after/)).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Before incident' })).toHaveValue('2');
+  await expect(save).toBeDisabled();
+  expect(consentWrites).toBe(3);
+});
+
+test('D20 withdrawal fences a delayed acknowledgment, survives reload and preserves unrelated changes', async ({ page }) => {
+  await signInFixture(page, 'recordingC');
+  await installCameraFixture(page, 'granted');
+  let preferenceWrites = 0;
+  await page.route(api + '**', (route) => {
+    if (route.request().url() === api) return route.fulfill({ json: profileFixture(null) });
+    if (route.request().method() === 'PUT') {
+      if (++preferenceWrites === 1) return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+      return route.fulfill({ json: route.request().postDataJSON() });
+    }
+    return route.fulfill({ json: defaultPreferences });
+  });
+  let stored = { revision: 'consent-1', settings: { ...offRecording, enabled: true, behaviors: ['eating'] } };
+  let interrupted = true;
+  let releaseEnable!: () => void;
+  const holdEnable = new Promise<void>((resolve) => { releaseEnable = resolve; });
+  await page.route(consentApi, async (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: consentResponse(stored) });
+    const { expectedRevision, settings } = route.request().postDataJSON();
+    if (settings.enabled) {
+      expect(expectedRevision).toBe('consent-1');
+      const stale = stored = { revision: 'consent-2', settings };
+      await holdEnable;
+      return route.fulfill({ json: consentResponse(stale) }).catch(() => {});
+    }
+    if (interrupted) return route.abort();
+    if (expectedRevision !== stored.revision) {
+      return route.fulfill({ status: 409, json: { code: 'recording_consent_changed' } });
+    }
+    stored = { revision: 'consent-3', settings };
+    return route.fulfill({ json: consentResponse(stored) });
+  });
+
+  await page.goto(origin + monitoringPath);
+  const recording = page.getByRole('region', { name: 'Incident recording' });
+  await expect(recording.getByRole('status')).toHaveText('Recording allowed');
+  const probeUrl = origin + '/synthetic-recording-eligibility.mjs';
+  const source = await readFile(resolve(test.info().config.rootDir, '../app/account/recording-consent.ts'), 'utf8');
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+  });
+  await page.route(probeUrl, (route) => route.fulfill({ contentType: 'text/javascript', body: outputText }));
+  await page.evaluate(async ({ probeUrl, accountId, snapshot }) => {
+    const { recordingSnapshotForSession, subscribeToRecordingWithdrawal } = await import(probeUrl);
+    const observe = () => {
+      document.documentElement.dataset.syntheticRecordingEligible =
+        String(Boolean(recordingSnapshotForSession(accountId, snapshot)?.settings.behaviors.includes('eating')));
+    };
+    observe();
+    subscribeToRecordingWithdrawal(accountId, observe);
+  }, { probeUrl, accountId: syntheticAccount, snapshot: consentResponse(stored) });
+  await expect(page.locator('html')).toHaveAttribute('data-synthetic-recording-eligible', 'true');
+  const audio = page.getByRole('switch', { name: 'Warning audio' });
+  await audio.check();
+  await recording.getByRole('checkbox', { name: 'Drinking' }).check();
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  await save.click();
+  await expect.poll(() => stored.revision).toBe('consent-2');
+  await recording.getByRole('button', { name: 'Withdraw recording consent' }).click();
+  await expect(recording.getByRole('status')).toHaveText('Recording stopped on this device. Account update pending.');
+  await expect(page.locator('html')).toHaveAttribute('data-synthetic-recording-eligible', 'false');
+  releaseEnable();
+  await expect(recording.getByRole('button', { name: 'Retry withdrawal' })).toBeVisible();
+  await expect(audio).toBeChecked();
+  await save.click();
+  await expect(page.getByText('Saved. Changes apply to later sessions.')).toBeVisible();
+  expect(stored.settings.enabled).toBe(true);
+
+  await page.reload();
+  await expect(recording.getByRole('status')).toHaveText('Recording stopped on this device. Account update pending.');
+  interrupted = false;
+  await recording.getByRole('button', { name: 'Retry withdrawal' }).click();
+  await expect(recording.getByRole('status')).toHaveText('Recording off');
+  await expect(recording.getByRole('status')).toBeFocused();
+  expect(stored.settings.enabled).toBe(false);
+  await page.reload();
+  await expect(recording.getByRole('status')).toHaveText('Recording off');
+  expect(preferenceWrites).toBe(2);
+});
+
+
+test('an earlier tab cannot clear a newer pending recording withdrawal', async ({ page, context }) => {
+  const second = await context.newPage();
+  let stored = { revision: 'consent-1', settings: { ...offRecording, enabled: true, behaviors: ['eating'] } };
+  let releaseFirst!: () => void;
+  const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let releaseSecond!: () => void;
+  const holdSecond = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  let secondSubmitted = false;
+
+  for (const tab of [page, second]) {
+    await signInFixture(tab, 'recordingD');
+    await tab.route(api + '**', (route) => route.fulfill({
+      json: route.request().url() === api ? profileFixture(null) : defaultPreferences,
+    }));
+    await tab.route(consentApi, async (route) => {
+      if (route.request().method() === 'GET') return route.fulfill({ json: consentResponse(stored) });
+      const change = route.request().postDataJSON();
+      expect(change.settings.enabled).toBe(false);
+      if (change.expectedRevision !== stored.revision) {
+        return route.fulfill({ status: 409, json: { code: 'recording_consent_changed' } });
+      }
+      if (tab === page) {
+        const acknowledged = stored = { revision: 'consent-2', settings: change.settings };
+        await holdFirst;
+        return route.fulfill({ json: consentResponse(acknowledged) });
+      }
+      secondSubmitted = true;
+      await holdSecond;
+      return route.fulfill({ status: 503, json: { code: 'account_unavailable' } });
+    });
+    await tab.goto(origin + monitoringPath);
+    await expect(tab.getByText('Recording allowed', { exact: true })).toBeVisible();
+  }
+
+  const pendingMessage = 'Recording stopped on this device. Account update pending.';
+  await page.getByRole('button', { name: 'Withdraw recording consent' }).click();
+  await expect(second.getByText(pendingMessage)).toBeVisible();
+  await expect.poll(() => stored.revision).toBe('consent-2');
+  stored = { revision: 'consent-3', settings: { ...stored.settings, enabled: true } };
+  await second.getByRole('button', { name: 'Retry withdrawal' }).click();
+  await expect.poll(() => secondSubmitted).toBe(true);
+  releaseFirst();
+  await expect(page.getByRole('button', { name: 'Retry withdrawal' })).toBeVisible();
+  await expect(page.getByText(pendingMessage)).toBeVisible();
+  await expect(second.getByText(pendingMessage)).toBeVisible();
+  releaseSecond();
+  await expect(second.getByRole('button', { name: 'Retry withdrawal' })).toBeVisible();
+});
+
+
+test('an unavailable draft camera does not block a valid recording save', async ({ page }) => {
+  await signInFixture(page, 'recordingE');
+  await installCameraFixture(page, 'granted');
+  let preferenceWrites = 0;
+  await page.route(api + '**', (route) => {
+    if (route.request().method() === 'PUT') preferenceWrites++;
+    return route.fulfill({ json: route.request().url() === api ? profileFixture(null) : defaultPreferences });
+  });
+  const stored = { revision: 'consent-1', settings: { ...offRecording, enabled: true, behaviors: ['eating'] } };
+  await page.route(consentApi, (route) => route.fulfill({ json: consentResponse(route.request().method() === 'GET'
+    ? stored : { revision: 'consent-2', settings: route.request().postDataJSON().settings }) }));
+
+  await page.goto(origin + monitoringPath);
+  const camera = page.getByRole('combobox', { name: 'Built-in camera' });
+  await camera.selectOption(cameraId);
+  await page.evaluate(() => {
+    (window as unknown as { syntheticCamera: { mode: string } }).syntheticCamera.mode = 'missing';
+    navigator.mediaDevices.dispatchEvent(new Event('devicechange'));
+  });
+  await expect(page.getByText(/Selected camera is unavailable/)).toBeVisible();
+  await page.getByRole('checkbox', { name: 'Drinking' }).check();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Incident recording settings saved.')).toBeVisible();
+  await expect(camera).toHaveValue(cameraId);
+  await expect(camera).toHaveAttribute('aria-invalid', 'true');
+  expect(preferenceWrites).toBe(0);
 });

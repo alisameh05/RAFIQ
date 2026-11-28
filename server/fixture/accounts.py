@@ -24,10 +24,13 @@ from fixture.account_lifecycle import (
 )
 from fixture.callback import InvalidCallback
 from fixture.database import (
-    ACCOUNT_SCHEMA_REVISIONS, PREFERENCES_SCHEMA_REVISION, PROFILE_SCHEMA_REVISIONS,
+    ACCOUNT_SCHEMA_REVISIONS, PREFERENCES_SCHEMA_REVISIONS, PROFILE_SCHEMA_REVISIONS, RECORDING_SCHEMA_REVISION,
     engine_for, schema_ready, schema_revision,
 )
 from fixture.identity import https_origin, session_claims, verification_key
+from fixture.recording_consent import (
+    RecordingCategoryUnavailable, RecordingChange, RecordingConflict, RecordingConsent, recording_consent,
+)
 
 SESSION = re.compile(r"sess_[A-Za-z0-9]{1,128}")
 CLERK_API = "https://api.clerk.com/v1/"
@@ -311,6 +314,9 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
         if request.url.path == "/api/v1/account/preferences":
             allowed_fields = set(Preferences.model_fields)
             title = "Check the monitoring preferences"
+        elif request.url.path == "/api/v1/recording-consent":
+            allowed_fields = set(RecordingChange.model_fields)
+            title = "Check the recording consent settings"
         elif profile:
             allowed_fields = {"displayName"}
             title = "Check the display name"
@@ -371,7 +377,7 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     def account_preferences(request: Request, authorization: str | None, preferences: Preferences | None = None):
         identity = verified_identity(authorization, settings, request.app.state.clerk)
         with account_access(engine, identity, settings,
-                            supported_revisions=(PREFERENCES_SCHEMA_REVISION,)) as (connection, row, conditions):
+                            supported_revisions=PREFERENCES_SCHEMA_REVISIONS) as (connection, row, conditions):
             require_account_conditions(row, conditions)
             parameters = {"subject": identity.subject}
             if preferences is None:
@@ -402,6 +408,30 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     @app.put("/api/v1/account/preferences", operation_id="putPreferences", response_model=Preferences)
     def put_preferences(preferences: Preferences, request: Request, authorization: Annotated[str | None, Header()] = None):
         return account_preferences(request, authorization, preferences)
+
+    def owned_recording_consent(request: Request, authorization: str | None, change: RecordingChange | None = None):
+        identity = verified_identity(authorization, settings, request.app.state.clerk)
+        with account_access(engine, identity, settings,
+                            supported_revisions=(RECORDING_SCHEMA_REVISION,)) as (connection, row, conditions):
+            require_account_conditions(row, conditions)
+            try:
+                return recording_consent(connection, row["id"], change)
+            except RecordingConflict:
+                raise AccountProblem(409, "recording_consent_changed", "Recording consent changed") from None
+            except RecordingCategoryUnavailable:
+                raise AccountProblem(
+                    422, "validation_failed", "Check the recording categories",
+                    field_errors=[{"pointer": "/settings/behaviors", "code": "invalid"}],
+                ) from None
+
+    @app.get("/api/v1/recording-consent", operation_id="getRecordingConsent", response_model=RecordingConsent)
+    def get_recording_consent(request: Request, authorization: Annotated[str | None, Header()] = None):
+        return owned_recording_consent(request, authorization)
+
+    @app.put("/api/v1/recording-consent", operation_id="putRecordingConsent", response_model=RecordingConsent)
+    def put_recording_consent(change: RecordingChange, request: Request,
+                              authorization: Annotated[str | None, Header()] = None):
+        return owned_recording_consent(request, authorization, change)
 
     @app.get("/api/v1/account/controlled-use", operation_id="getControlledUse", response_model=Conditions)
     def get_conditions(request: Request, authorization: Annotated[str | None, Header()] = None):

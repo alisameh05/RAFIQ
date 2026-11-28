@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'react';
 import { privatePath } from '../account-entry/return';
+import type { RequestRecordingConsent } from './recording-consent';
+import { RecordingControls, useRecordingSettings } from './recording-settings';
 
 export type Preferences = {
   cameraDeviceId: string | null;
@@ -90,7 +92,7 @@ function WarningExample({ visibility }: { visibility: Preferences['warningVisibi
 function PreferencesRead({ request, resume = 0, children }: {
   request: RequestPreferences;
   resume?: number;
-  children: (preferences: Preferences) => React.ReactNode;
+  children: (preferences: Preferences | undefined) => React.ReactNode;
 }) {
   const [load, setLoad] = useState<{ preferences: Preferences } | 'loading' | 'failed'>('loading');
   const [attempt, setAttempt] = useState(0);
@@ -117,7 +119,8 @@ function PreferencesRead({ request, resume = 0, children }: {
           setAttempt((previous) => previous + 1);
         }}>Retry</button>
       </div>
-      : children(load.preferences)}
+      : null}
+    {children(typeof load === 'object' ? load.preferences : undefined)}
   </div>;
 }
 
@@ -127,9 +130,13 @@ type PreferencesEditor = {
   changeDraft: (draft?: Preferences) => void;
 };
 
-export function MonitoringSettings({ resume, ...editor }: PreferencesEditor & { resume: number }) {
+export function MonitoringSettings({ resume, recording, ...editor }: PreferencesEditor & {
+  resume: number;
+  recording: { accountId: string; request: RequestRecordingConsent };
+}) {
+  const recordingEditor = useRecordingSettings(recording, resume);
   return <PreferencesRead request={editor.request} resume={resume}>
-    {(preferences) => <PreferencesForm initial={preferences} {...editor} />}
+    {(preferences) => <PreferencesForm initial={preferences} recording={recordingEditor} {...editor} />}
   </PreferencesRead>;
 }
 
@@ -185,50 +192,70 @@ function cameraStatus(check: CameraCheck, savedMissing: boolean, draftMissing: b
   }
 }
 
-function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft }: PreferencesEditor & { initial: Preferences }) {
-  const [confirmed, setConfirmed] = useState(initial);
-  const draft = pendingDraft ?? confirmed;
+function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft, recording }: PreferencesEditor & {
+  initial: Preferences | undefined;
+  recording: ReturnType<typeof useRecordingSettings>;
+}) {
+  const [acknowledged, setAcknowledged] = useState<Preferences>();
+  const confirmed = acknowledged ?? initial;
+  const draft = confirmed ? pendingDraft ?? confirmed : undefined;
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [fieldError, setFieldError] = useState(false);
   const pending = useRef<AbortController | null>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
   const cameraInput = useRef<HTMLSelectElement>(null);
+  const confirmation = useRef<HTMLDialogElement>(null);
   const { check, recheck, rechecking } = useCameraCheck();
   const cameras = check.state === 'listed' ? check.cameras : [];
-  const selected = cameras.find((camera) => camera.deviceId === draft.cameraDeviceId);
-  const savedMissing = confirmed.cameraDeviceId !== null &&
-    !cameras.some((camera) => camera.deviceId === confirmed.cameraDeviceId);
-  const draftMissing = draft.cameraDeviceId !== null && !selected && draft.cameraDeviceId !== confirmed.cameraDeviceId;
-  const dirty = !samePreferences(confirmed, draft);
-  const saving = saveState === 'saving';
+  const selected = cameras.find((camera) => camera.deviceId === draft?.cameraDeviceId);
+  const savedMissing = Boolean(confirmed?.cameraDeviceId &&
+    !cameras.some((camera) => camera.deviceId === confirmed.cameraDeviceId));
+  const draftMissing = Boolean(draft?.cameraDeviceId && !selected && draft.cameraDeviceId !== confirmed?.cameraDeviceId);
+  const dirty = Boolean(confirmed && draft && !samePreferences(confirmed, draft));
+  const saving = saveState === 'saving' || recording.saveState === 'saving';
+  const recordingReady = recording.dirty && !recording.review && recording.load === 'ready';
+  const preferencesReady = dirty && !rechecking;
+  const canSave = !saving && (preferencesReady || recordingReady);
 
   useEffect(() => () => pending.current?.abort(), []);
 
   function change(patch: Partial<Preferences>) {
-    if (pending.current) return;
+    if (pending.current || !draft || !confirmed) return;
     const next = { ...draft, ...patch };
     changeDraft(samePreferences(confirmed, next) ? undefined : next);
     setSaveState('idle');
     setFieldError(false);
   }
 
-  async function save(event?: FormEvent<HTMLFormElement>) {
+  function save(event?: FormEvent<HTMLFormElement>, confirmOptIn = false) {
     event?.preventDefault();
-    if (pending.current || !dirty || rechecking) return;
-    if (draftMissing) {
+    if (!canSave || pending.current) return;
+    if (preferencesReady && draftMissing && !recordingReady) {
       setFieldError(true);
       cameraInput.current?.focus();
       return;
     }
 
+    if (recordingReady && recording.optIn && !recording.allowed && !confirmOptIn) {
+      confirmation.current?.showModal();
+      return;
+    }
+    if (preferencesReady && draft) {
+      if (draftMissing) setFieldError(true);
+      else void savePreferences(draft);
+    }
+    if (recordingReady) void recording.save();
+  }
+
+  async function savePreferences(preferences: Preferences) {
     const controller = new AbortController();
     pending.current = controller;
     setSaveState('saving');
     try {
-      const result = await request(controller.signal, draft);
-      if (!samePreferences(result, draft)) throw new Error('Unconfirmed preferences');
+      const result = await request(controller.signal, preferences);
+      if (!samePreferences(result, preferences)) throw new Error('Unconfirmed preferences');
       if (controller.signal.aborted) return;
-      setConfirmed(result);
+      setAcknowledged(result);
       changeDraft();
       setFieldError(false);
       setSaveState('saved');
@@ -241,6 +268,7 @@ function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft }:
 
   return <form className="monitoring-form" onSubmit={save}>
     <p>Set up your monitoring preferences while stationary.</p>
+    {draft && confirmed && <>
     <section className="monitoring-section" aria-labelledby="camera-settings">
       <h2 id="camera-settings">Camera</h2>
       <label htmlFor="monitoring-camera">Built-in camera</label>
@@ -258,7 +286,7 @@ function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft }:
       <p id="camera-state" role="status">{rechecking ? 'Checking camera access…' : cameraStatus(check, savedMissing, draftMissing)}</p>
       <button className="entry-action entry-secondary" type="button"
         aria-disabled={check.state === 'checking' || rechecking || saving}
-        onClick={() => { if (!pending.current) void recheck(selected); }}>Recheck</button>
+        onClick={() => { if (!saving) void recheck(selected); }}>Recheck</button>
     </section>
     <section className="monitoring-section" aria-labelledby="warning-settings">
       <h2 id="warning-settings">Warnings</h2>
@@ -281,17 +309,35 @@ function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft }:
       <p id="visibility-help">Enhanced visibility makes warning text and its symbol larger.</p>
       <WarningExample visibility={draft.warningVisibility} />
     </section>
+    </>}
+    <RecordingControls editor={recording} saving={saving} focusSave={() => saveButton.current?.focus()} />
+    <dialog className="profile-dialog" ref={confirmation} aria-labelledby="confirm-recording-heading"
+      onClose={() => saveButton.current?.focus()}>
+      <h2 id="confirm-recording-heading">Allow video-only incident clips?</h2>
+      <p>RAFIQ can save clips for your selected categories in later sessions. You can withdraw consent at any time.</p>
+      <div className="profile-actions">
+        <button className="entry-action entry-secondary" type="button" onClick={() => confirmation.current?.close()}>Cancel</button>
+        <button className="entry-action" type="button" onClick={() => {
+          confirmation.current?.close();
+          save(undefined, true);
+        }}>Confirm recording</button>
+      </div>
+    </dialog>
     <div className="monitoring-section">
       <p id="save-preferences-help">Saved changes apply to later sessions.</p>
       <div className="profile-actions">
         <button className="entry-action profile-save" type="submit" ref={saveButton}
-          aria-disabled={!dirty || saving || rechecking} aria-describedby="save-preferences-help">
+          aria-disabled={!canSave} aria-describedby="save-preferences-help">
           Save
         </button>
         <span className="profile-status" role="status">
-          {saving ? 'Saving…' : saveState === 'saved' ? 'Saved. Changes apply to later sessions.' : dirty && 'Unsaved changes'}
+          {saving ? 'Saving…' : saveState === 'saved'
+            ? recording.dirty ? 'Monitoring preferences saved.' : 'Saved. Changes apply to later sessions.'
+            : (dirty || recording.dirty) && 'Unsaved changes'}
         </span>
       </div>
+      <p role="status">{recording.saveState === 'saved' && 'Incident recording settings saved.'}</p>
+      {recording.saveState === 'failed' && <p role="alert">Couldn’t save incident recording settings. Your changes are still here.</p>}
       {saveState === 'failed' && <div className="profile-actions">
         <p role="alert">Couldn’t save monitoring preferences. Your changes are still here.</p>
         <button className="entry-link" type="button" onClick={() => {
@@ -306,7 +352,7 @@ function PreferencesForm({ initial, request, draft: pendingDraft, changeDraft }:
 export function ReadinessPreferences({ request }: { request: RequestPreferences }) {
   return <section aria-labelledby="readiness-preferences">
     <h2 id="readiness-preferences">Saved monitoring preferences</h2>
-    <PreferencesRead request={request}>{(preferences) => <ReadinessPreferenceSummary preferences={preferences} />}</PreferencesRead>
+    <PreferencesRead request={request}>{(preferences) => preferences && <ReadinessPreferenceSummary preferences={preferences} />}</PreferencesRead>
     <Link href={privatePath('monitoring')} prefetch={false}>Change monitoring preferences</Link>
   </section>;
 }

@@ -9,6 +9,8 @@ import { VerifyEmail } from '../account-entry/verify-email';
 import { hasPendingSignOut, listenForPrivateAccess, notifyPrivateAccess, rememberPendingSignOut, setPendingSignOut } from './private-access';
 import { DriverProfile, type ProfileAccount } from './driver-profile';
 import { DriverNavigation, SettingsLayout } from './settings-layout';
+import { parseRecordingConsent, RecordingRevisionConflict, type RecordingChange } from './recording-consent';
+import { RecordingPrivacy } from './recording-settings';
 import { MonitoringSettings, ReadinessPreferences, parsePreferences, type Preferences } from './monitoring-preferences';
 
 const sections = [
@@ -100,6 +102,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   const [profileDraft, setProfileDraft] = useState<{ accountId: string; value: string } | null>(null);
   const [preferencesDraft, setPreferencesDraft] = useState<{ accountId: string; value: Preferences } | null>(null);
   const [preferencesResume, setPreferencesResume] = useState(0);
+  const [settingsAccountId, setSettingsAccountId] = useState<string>();
   const [conditions, setConditions] = useState<Conditions | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
   const accepted = conditions !== null && selectedVersion === conditions.version;
@@ -171,6 +174,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
         if (account.status === 'active') {
           if (typeof account.accountId !== 'string' || !account.accountId) throw new Error();
           currentAccount.current = account.accountId;
+          if (isSettingsEntry(target)) setSettingsAccountId(account.accountId);
           if (target === 'monitoring') {
             setPreferencesDraft((current) => current?.accountId === account.accountId ? current : null);
           }
@@ -231,6 +235,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     window.clearTimeout(linkExpiryTimer.current);
     if (panel.current && view !== next) panel.current.hidden = true;
     currentAccount.current = null;
+    setSettingsAccountId(undefined);
     inFlight.current = false;
     setVerified(false);
     setProfile(null);
@@ -391,6 +396,24 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
     }
   }
 
+  async function requestRecordingConsent(localSignal: AbortSignal, change?: RecordingChange) {
+    const scope = requestScope.current;
+    const owner = currentAccount.current;
+    if (!scope || !owner) throw new Error();
+    const signal = AbortSignal.any([scope.signal, localSignal]);
+    try {
+      const result = await request('/recording-consent', signal, change ? 'PUT' : 'GET', change);
+      if (owner !== currentAccount.current) throw new GateProblem('authentication_required');
+      return parseRecordingConsent(result);
+    } catch (error) {
+      if (error instanceof GateProblem && error.code === 'recording_consent_changed') {
+        throw new RecordingRevisionConflict();
+      }
+      if (!signal.aborted) showAccessProblem(error);
+      throw error;
+    }
+  }
+
   async function recheckSettings(view: View, owner: string | null, signal: AbortSignal) {
     const version = profileRequestVersion.current;
     const canRefresh = view === 'profile' && !editingProfile.current;
@@ -437,7 +460,7 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
       try {
         await recheckSettings(view, currentAccount.current, signal);
         if (signal.aborted) return;
-        if (view === 'monitoring') setPreferencesResume((count) => count + 1);
+        if (view === 'monitoring' || view === 'privacy') setPreferencesResume((count) => count + 1);
         if (panel.current) panel.current.hidden = false;
       } catch (error) {
         if (!signal.aborted && !showAccessProblem(error)) clearPrivateView('unavailable');
@@ -575,7 +598,8 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   if (destination === 'monitoring' && (view === 'monitoring' || view === 'checking' || view === 'unavailable')) {
     return <div ref={panel} className="driver-private">
       <SettingsLayout current="monitoring" heading={heading}>
-        {view === 'monitoring' ? <MonitoringSettings request={requestPreferences} resume={preferencesResume}
+        {view === 'monitoring' && settingsAccountId ? <MonitoringSettings request={requestPreferences}
+          recording={{ accountId: settingsAccountId, request: requestRecordingConsent }} resume={preferencesResume}
           draft={preferencesDraft?.value} changeDraft={(value) => {
             const accountId = currentAccount.current;
             setPreferencesDraft(value && accountId ? { accountId, value } : null);
@@ -592,9 +616,9 @@ function SignedInGate({ apiOrigin, entry, destination, linkId, userId, sessionId
   if (view === 'privacy' || view === 'sessions') {
     return <div ref={panel} className="driver-private">
       <SettingsLayout current={view} heading={heading}>
-        <p>{view === 'privacy'
-          ? 'Privacy controls are currently unavailable.'
-          : 'Session history is currently unavailable.'}</p>
+        {view === 'privacy' && settingsAccountId
+          ? <RecordingPrivacy accountId={settingsAccountId} request={requestRecordingConsent} resume={preferencesResume} />
+          : <p>Session history is currently unavailable.</p>}
         <Link href={privatePath('profile')} prefetch={false}>Return to Profile</Link>
       </SettingsLayout>
     </div>;
