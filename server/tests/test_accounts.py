@@ -423,3 +423,64 @@ def test_controlled_use_replay_and_private_access_for_the_current_driver(account
         with publisher.begin() as connection:
             connection.execute(text("DELETE FROM rafiq_fixture.controlled_use_publication"))
         publisher.dispose()
+
+
+
+def test_monitoring_preferences_are_owned_replacements_and_keep_live_policy_out(accounts):
+    client, session, _ = accounts
+    publisher = engine_for("migrate")
+    preferences = ACCOUNT + "/preferences"
+    version = "controlled-use-1"
+    default = {"cameraDeviceId": None, "warningAudio": False, "warningVisibility": "default"}
+    enhanced = {"cameraDeviceId": "synthetic-integrated-camera", "warningAudio": True, "warningVisibility": "enhanced"}
+    try:
+        with publisher.begin() as connection:
+            connection.execute(text("""
+                INSERT INTO rafiq_fixture.controlled_use_publication (singleton, version, conditions)
+                VALUES (true, :version, CAST(:conditions AS jsonb))
+            """), {"version": version, "conditions": json.dumps(CONDITIONS)})
+        subject_a, driver_a = session()
+        _, driver_b = session()
+        assert client.get(preferences).status_code == 401
+        assert client.put(preferences, json=enhanced).status_code == 401
+        assert client.get(preferences, headers=driver_a).json()["code"] == "controlled_use_required"
+        assert client.put(preferences, headers=driver_a, json=enhanced).status_code == 403
+        for driver in (driver_a, driver_b):
+            assert client.put(ACCOUNT + "/controlled-use", headers=driver,
+                              json={"version": version, "accepted": True}).status_code == 200
+        initial = client.get(preferences, headers=driver_a)
+        assert initial.status_code == 200
+        assert initial.headers["cache-control"] == "private, no-store"
+        assert initial.json() == default
+        saved = client.put(preferences, headers=driver_a, json=enhanced)
+        assert saved.status_code == 200
+        assert saved.headers["cache-control"] == "private, no-store"
+        assert saved.json() == enhanced
+        assert client.get(preferences, headers=session(subject=subject_a)[1]).json() == enhanced
+        assert client.get(preferences, headers=driver_b).json() == default
+
+        for invalid in (
+            {"warningAudio": True},
+            {**enhanced, "warningAudio": "false"},
+            {**enhanced, "warningVisibility": "bright"},
+            {**enhanced, "cameraDeviceId": ""},
+            {**enhanced, "cameraDeviceId": "x" * 129},
+            {**enhanced, "cameraDeviceId": "\x00"},
+            {**enhanced, "accountId": "another-driver"},
+            {**enhanced, "warningPolicy": {"severity": "off", "dwellMs": 0}},
+        ):
+            rejected = client.put(preferences, headers=driver_a, json=invalid)
+            assert rejected.status_code == 422
+            assert rejected.headers["content-type"] == "application/problem+json"
+            assert "another-driver" not in rejected.text
+        assert client.get(preferences, headers=driver_a).json() == enhanced
+        assert client.put(preferences, headers=driver_b, json={**default, "warningAudio": True}).status_code == 200
+        assert client.put(preferences, headers=driver_a, json=default).json() == default
+        assert client.get(preferences, headers=driver_b).json() == {**default, "warningAudio": True}
+        client.app.state.synthetic_users[subject_a]["banned"] = True
+        assert client.get(preferences, headers=driver_a).status_code == 403
+        assert client.put(preferences, headers=driver_a, json=enhanced).status_code == 403
+    finally:
+        with publisher.begin() as connection:
+            connection.execute(text("DELETE FROM rafiq_fixture.controlled_use_publication"))
+        publisher.dispose()

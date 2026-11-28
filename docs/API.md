@@ -375,7 +375,7 @@ paths:
     get:
       operationId: "getPreferences"
       tags: ["M01"]
-      description: "Return general monitoring preferences. The browser tests whether a preferred built-in camera is available locally."
+      description: "Return general monitoring preferences. The browser tests whether a preferred built-in camera is available locally. The initial values are automatic camera selection (null), warning audio off and Default visibility."
       x-authority: "Verified eligible driver · current owner and action"
       responses:
         "200":
@@ -390,10 +390,11 @@ paths:
         "401": {"$ref":"#/components/responses/Http401"}
         "403": {"$ref":"#/components/responses/Http403"}
         "500": {"$ref":"#/components/responses/Http500"}
+        "503": {"$ref":"#/components/responses/Http503"}
     put:
       operationId: "putPreferences"
       tags: ["M01"]
-      description: "Replace general preferences for subsequent sessions. Validate camera preference and warning presentation; live thresholds and policy are configured by release."
+      description: "Replace general preferences for subsequent sessions. The browser checks device availability and the API validates the opaque camera ID and warning presentation values. Concurrent writes use the last committed replacement. The release supplies live thresholds and policy."
       x-authority: "Verified eligible driver · current owner and action"
       requestBody:
         required: true
@@ -416,6 +417,7 @@ paths:
         "403": {"$ref":"#/components/responses/Http403"}
         "422": {"$ref":"#/components/responses/Http422"}
         "500": {"$ref":"#/components/responses/Http500"}
+        "503": {"$ref":"#/components/responses/Http503"}
   "/webhooks/clerk":
     post:
       operationId: "receiveClerkEvent"

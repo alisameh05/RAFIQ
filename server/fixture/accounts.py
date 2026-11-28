@@ -23,7 +23,10 @@ from fixture.account_lifecycle import (
     SUBJECT, ClerkCallback, LifecycleUnavailable, identity_lifecycle, lock_identity, valid_revision,
 )
 from fixture.callback import InvalidCallback
-from fixture.database import ACCOUNT_SCHEMA_REVISIONS, PROFILE_SCHEMA_REVISION, engine_for, schema_ready, schema_revision
+from fixture.database import (
+    ACCOUNT_SCHEMA_REVISIONS, PREFERENCES_SCHEMA_REVISION, PROFILE_SCHEMA_REVISIONS,
+    engine_for, schema_ready, schema_revision,
+)
 from fixture.identity import https_origin, session_claims, verification_key
 
 SESSION = re.compile(r"sess_[A-Za-z0-9]{1,128}")
@@ -80,6 +83,20 @@ class AccountPatch(BaseModel):
         value = value.strip()
         if not value or re.search(r"[\x00\ud800-\udfff]", value):
             raise ValueError("Invalid display name")
+        return value
+
+
+class Preferences(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    cameraDeviceId: Annotated[str, Field(min_length=1, max_length=128)] | None
+    warningAudio: bool
+    warningVisibility: Literal["default", "enhanced"]
+
+    @field_validator("cameraDeviceId")
+    @classmethod
+    def valid_camera_device_id(cls, value: str | None) -> str | None:
+        if value is not None and re.search(r"[\x00\ud800-\udfff]", value):
+            raise ValueError("Invalid camera device ID")
         return value
 
 
@@ -187,12 +204,12 @@ def verified_identity(authorization: str | None, settings: AccountSettings,
 
 
 @contextmanager
-def account_access(engine: Engine, identity: DriverIdentity, settings: AccountSettings, *, profile_update=False):
+def account_access(engine: Engine, identity: DriverIdentity, settings: AccountSettings, *,
+                   supported_revisions=ACCOUNT_SCHEMA_REVISIONS):
     subject = identity.subject
     try:
         with engine.begin() as connection:
-            supported = (PROFILE_SCHEMA_REVISION,) if profile_update else ACCOUNT_SCHEMA_REVISIONS
-            if schema_revision(connection, "api") not in supported:
+            if schema_revision(connection, "api") not in supported_revisions:
                 raise unavailable()
             connection.execute(
                 text("SELECT set_config('rafiq.driver_subject', :subject, true)"), {"subject": subject}
@@ -291,14 +308,22 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
         if any(entry["type"] == "json_invalid" for entry in errors):
             return await account_problem(request, AccountProblem(400, "malformed_request", "Malformed request"))
         profile = request.method == "PATCH" and request.url.path == "/api/v1/account"
-        allowed_fields = {"displayName"} if profile else {"version", "accepted"}
+        if request.url.path == "/api/v1/account/preferences":
+            allowed_fields = set(Preferences.model_fields)
+            title = "Check the monitoring preferences"
+        elif profile:
+            allowed_fields = {"displayName"}
+            title = "Check the display name"
+        else:
+            allowed_fields = {"version", "accepted"}
+            title = "Check the acceptance fields"
         fields = {
             ("/" + entry["loc"][1], "required" if entry["type"] == "missing" else "invalid")
             for entry in errors
             if len(entry["loc"]) > 1 and entry["loc"][0] == "body" and entry["loc"][1] in allowed_fields
         }
         return await account_problem(request, AccountProblem(
-            422, "validation_failed", "Check the display name" if profile else "Check the acceptance fields",
+            422, "validation_failed", title,
             field_errors=[{"pointer": pointer, "code": code} for pointer, code in sorted(fields)],
         ))
 
@@ -331,7 +356,8 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
     @app.patch("/api/v1/account", operation_id="updateAccount", response_model=Account)
     def update_account(patch: AccountPatch, request: Request, authorization: Annotated[str | None, Header()] = None):
         identity = verified_identity(authorization, settings, request.app.state.clerk)
-        with account_access(engine, identity, settings, profile_update=True) as (connection, row, conditions):
+        with account_access(engine, identity, settings,
+                            supported_revisions=PROFILE_SCHEMA_REVISIONS) as (connection, row, conditions):
             current = require_account_conditions(row, conditions)
             updated = connection.execute(text("""
                 UPDATE rafiq_fixture.driver_accounts SET display_name = :display_name
@@ -341,6 +367,41 @@ def create_account_app(settings: AccountSettings, engine: Engine, provider: http
             if updated is None:
                 raise restricted(settings)
             return account_response(updated, identity.email, current.version)
+
+    def account_preferences(request: Request, authorization: str | None, preferences: Preferences | None = None):
+        identity = verified_identity(authorization, settings, request.app.state.clerk)
+        with account_access(engine, identity, settings,
+                            supported_revisions=(PREFERENCES_SCHEMA_REVISION,)) as (connection, row, conditions):
+            require_account_conditions(row, conditions)
+            parameters = {"subject": identity.subject}
+            if preferences is None:
+                statement = """
+                    SELECT camera_device_id AS "cameraDeviceId", warning_audio AS "warningAudio",
+                           warning_visibility AS "warningVisibility"
+                    FROM rafiq_fixture.driver_accounts WHERE clerk_subject = :subject AND NOT restricted
+                """
+            else:
+                statement = """
+                    UPDATE rafiq_fixture.driver_accounts
+                    SET camera_device_id = :cameraDeviceId, warning_audio = :warningAudio,
+                        warning_visibility = :warningVisibility
+                    WHERE clerk_subject = :subject AND NOT restricted
+                    RETURNING camera_device_id AS "cameraDeviceId", warning_audio AS "warningAudio",
+                              warning_visibility AS "warningVisibility"
+                """
+                parameters.update(preferences.model_dump())
+            result = connection.execute(text(statement), parameters).mappings().one_or_none()
+            if result is None:
+                raise restricted(settings)
+            return Preferences.model_validate(dict(result))
+
+    @app.get("/api/v1/account/preferences", operation_id="getPreferences", response_model=Preferences)
+    def get_preferences(request: Request, authorization: Annotated[str | None, Header()] = None):
+        return account_preferences(request, authorization)
+
+    @app.put("/api/v1/account/preferences", operation_id="putPreferences", response_model=Preferences)
+    def put_preferences(preferences: Preferences, request: Request, authorization: Annotated[str | None, Header()] = None):
+        return account_preferences(request, authorization, preferences)
 
     @app.get("/api/v1/account/controlled-use", operation_id="getControlledUse", response_model=Conditions)
     def get_conditions(request: Request, authorization: Annotated[str | None, Header()] = None):

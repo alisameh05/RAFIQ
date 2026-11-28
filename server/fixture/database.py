@@ -4,7 +4,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 PROFILE_SCHEMA_REVISION = "0007_driver_profile"
-ACCOUNT_SCHEMA_REVISIONS = ("0006_private_access", PROFILE_SCHEMA_REVISION)
+PREFERENCES_SCHEMA_REVISION = "0008_monitoring_preferences"
+PROFILE_SCHEMA_REVISIONS = (PROFILE_SCHEMA_REVISION, PREFERENCES_SCHEMA_REVISION)
+ACCOUNT_SCHEMA_REVISIONS = ("0006_private_access", *PROFILE_SCHEMA_REVISIONS)
 FIXTURE_SCHEMA_REVISIONS = (
     "0003_validation_callback", "0004_driver_accounts", "0005_controlled_use", *ACCOUNT_SCHEMA_REVISIONS,
 )
